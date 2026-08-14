@@ -1,13 +1,101 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CLIENT
+  ADMIN
+}
+
+enum Categorie {
+  CLUB
+  NORMAL
+  VIP
+}
+
+enum StatutReservation {
+  CONFIRMEE
+  ANNULEE
+}
+
+enum StatutTicket {
+  VALIDE
+  ANNULE
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  nom          String
+  email        String        @unique
+  motDePasse   String
+  role         Role          @default(CLIENT)
+  reservations Reservation[]
+}
+
+model Movie {
+  id         Int         @id @default(autoincrement())
+  titre      String
+  synopsis   String
+  duree      Int // en minutes
+  genre      String
+  affiche    String? // URL de l'affiche
+  screenings Screening[]
+}
+
+model Screening {
+  id           Int           @id @default(autoincrement())
+  date         DateTime
+  horaire      String // "18:00" | "20:30" | "22:30"
+  movie        Movie         @relation(fields: [movieId], references: [id])
+  movieId      Int
+  reservations Reservation[]
+
+  @@unique([movieId, date, horaire])
+}
+
+model Seat {
+  id               Int               @id @default(autoincrement())
+  rangee           String // "A" .. "J"
+  numero           Int // 1 .. 12
+  categorie        Categorie // CLUB (A-C) / NORMAL (D-G) / VIP (H-J)
+  reservationSeats ReservationSeat[]
+
+  @@unique([rangee, numero])
+}
+
+model Reservation {
+  id               Int               @id @default(autoincrement())
+  montantTotal     Int // en DH
+  statut           StatutReservation @default(CONFIRMEE)
+  dateReservation  DateTime          @default(now())
+  user             User              @relation(fields: [userId], references: [id])
+  userId           Int
+  screening        Screening         @relation(fields: [screeningId], references: [id])
+  screeningId      Int
+  reservationSeats ReservationSeat[]
+  ticket           Ticket?
+}
+
+model ReservationSeat {
+  id                Int         @id @default(autoincrement())
+  verrouilleJusqua  DateTime?   // verrou temporaire de 10 minutes
+  reservation       Reservation @relation(fields: [reservationId], references: [id])
+  reservationId     Int
+  seat              Seat        @relation(fields: [seatId], references: [id])
+  seatId            Int
+
+  @@unique([reservationId, seatId])
+}
+
+model Ticket {
+  id            Int          @id @default(autoincrement())
+  codeQR        String       @unique // UUID unique par billet
+  statut        StatutTicket @default(VALIDE)
+  reservation   Reservation  @relation(fields: [reservationId], references: [id])
+  reservationId Int          @unique
 }
