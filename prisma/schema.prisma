@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  name         String
+  email        String        @unique
+  password     String
+  role         Role          @default(CLIENT)
+  reservations Reservation[]
+}
+
+model Movie {
+  id          Int          @id @default(autoincrement())
+  title       String
+  synopsis    String
+  duration    Int
+  genre       String
+  poster      String?
+  screenings  Screening[]
+}
+
+model Screening {
+  id            Int           @id @default(autoincrement())
+  date          DateTime
+  showTime      String
+  movieId       Int
+  movie         Movie         @relation(fields: [movieId], references: [id])
+  reservations  Reservation[]
+
+  @@unique([movieId, date, showTime])
+}
+
+model Seat {
+  id               Int               @id @default(autoincrement())
+  row              String
+  number           Int
+  category         Category
+  reservationSeats ReservationSeat[]
+
+  @@unique([row, number])
+}
+
+model Reservation {
+  id               Int               @id @default(autoincrement())
+  totalAmount      Int
+  status           ReservationStatus @default(CONFIRMED)
+  reservedAt       DateTime          @default(now())
+  userId           Int
+  user             User              @relation(fields: [userId], references: [id])
+  screeningId      Int
+  screening        Screening         @relation(fields: [screeningId], references: [id])
+  reservationSeats ReservationSeat[]
+  ticket           Ticket?
+}
+
+model ReservationSeat {
+  id              Int           @id @default(autoincrement())
+  lockedUntil     DateTime?
+  reservationId   Int
+  reservation     Reservation   @relation(fields: [reservationId], references: [id])
+  seatId          Int
+  seat            Seat          @relation(fields: [seatId], references: [id])
+
+  @@unique([reservationId, seatId])
+}
+
+model Ticket {
+  id            Int            @id @default(autoincrement())
+  qrCode        String         @unique
+  status        TicketStatus   @default(VALID)
+  reservationId Int            @unique
+  reservation   Reservation    @relation(fields: [reservationId], references: [id])
+}
+
+enum Role {
+  CLIENT
+  ADMIN
+}
+
+enum Category {
+  CLUB
+  NORMAL
+  VIP
+}
+
+enum ReservationStatus {
+  CONFIRMED
+  CANCELLED
+}
+
+enum TicketStatus {
+  VALID
+  CANCELLED
+}
