@@ -1,1 +1,32 @@
-{"name":"cinema-avenida-backend","version":"1.0.0","description":"Backend API REST - Cinéma Avenida (PFE)","main":"src/index.js","scripts":{"dev":"nodemon src/index.js","start":"node src/index.js","seed":"node prisma/seed.js"},"dependencies":{"@prisma/client":"^5.22.0","bcrypt":"^5.1.1","cors":"^2.8.5","dotenv":"^16.4.5","express":"^4.21.1","jsonwebtoken":"^9.0.2","qrcode":"^1.5.4"},"devDependencies":{"nodemon":"^3.1.7","prisma":"^5.22.0"}}
+{
+  "name": "cinema-avenida-backend",
+  "version": "1.0.0",
+  "description": "Backend API REST - Cinéma Avenida (PFE)",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "nodemon --exec ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "seed": "node prisma/seed.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "jsonwebtoken": "^9.0.2",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^26.2.0",
+    "nodemon": "^3.1.14",
+    "prisma": "^5.22.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
