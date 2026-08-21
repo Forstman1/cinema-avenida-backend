@@ -91,6 +91,7 @@ enum Category {
 }
 
 enum ReservationStatus {
+  EN_ATTENTE
   CONFIRMED
   CANCELLED
 }
