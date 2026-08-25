@@ -29,7 +29,28 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
     });
     if (!screening) return { error: "screening_not_found" };
 
-    // 2. Récupère les sièges demandés avec leurs catégories
+    // 2. Vérifie que l'utilisateur n'a pas déjà une réservation en attente verrouillée
+    const activePending = await tx.reservation.findFirst({
+      where: {
+        userId,
+        status: "EN_ATTENTE",
+        reservationSeats: {
+          some: {
+            lockedUntil: { gt: new Date() },
+          },
+        },
+      },
+      orderBy: { reservedAt: "desc" },
+    });
+
+    if (activePending) {
+      return {
+        error: "pending_exists",
+        pendingReservationId: activePending.id,
+      };
+    }
+
+    // 3. Récupère les sièges demandés avec leurs catégories
     const seats = await tx.seat.findMany({
       where: { id: { in: seatIds.map(Number) } },
     });
@@ -37,7 +58,7 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
       return { error: "seats_not_found" };
     }
 
-    // 3. Vérifie que les sièges ne sont pas déjà pris
+    // 4. Vérifie que les sièges ne sont pas déjà pris
     // Pris = réservation CONFIRMÉE, ou EN_ATTENTE avec verrou encore actif
     const taken = await tx.reservationSeat.findMany({
       where: {
@@ -67,13 +88,13 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
       };
     }
 
-    // 4. Calcule le montant total
+    // 5. Calcule le montant total
     const totalAmount = seats.reduce(
       (sum, seat) => sum + (SEAT_PRICES[seat.category] || 60),
       0
     );
 
-    // 5. Crée la réservation EN_ATTENTE avec les sièges verrouillés 10 min
+    // 6. Crée la réservation EN_ATTENTE avec les sièges verrouillés 10 min
     const lockUntil = new Date(Date.now() + 10 * 60 * 1000);
     const reservation = await tx.reservation.create({
       data: {
@@ -100,6 +121,12 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
   if ("error" in result) {
     if (result.error === "screening_not_found") {
       res.status(404).json({ message: "Séance non trouvée" });
+    } else if (result.error === "pending_exists") {
+      res.status(409).json({
+        message:
+          "Vous avez déjà une réservation en cours. Terminez-la ou laissez-la expirer.",
+        pendingReservationId: result.pendingReservationId,
+      });
     } else if (result.error === "seats_not_found") {
       res.status(400).json({ message: "Certains sièges n'existent pas" });
     } else if (result.error === "seats_unavailable") {

@@ -33,7 +33,29 @@ export async function getScreeningsByMovie(
     orderBy: [{ date: "asc" }, { showTime: "asc" }],
   });
 
-  res.json(screenings);
+  const screeningsWithAvailability = await Promise.all(
+    screenings.map(async (screening) => {
+      const taken = await prisma.reservationSeat.count({
+        where: {
+          reservation: {
+            screeningId: screening.id,
+            status: { in: ["CONFIRMED", "EN_ATTENTE"] },
+          },
+          OR: [
+            { reservation: { status: "CONFIRMED" } },
+            { lockedUntil: { gt: new Date() } },
+          ],
+        },
+      });
+
+      return {
+        ...screening,
+        availableSeats: Math.max(0, 120 - taken),
+      };
+    })
+  );
+
+  res.json(screeningsWithAvailability);
 }
 
 interface MovieBody {
