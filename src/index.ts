@@ -6,6 +6,7 @@ import authRoutes from "./routes/auth.routes";
 import moviesRoutes from "./routes/movies.routes";
 import screeningsRoutes from "./routes/screenings.routes";
 import reservationsRoutes from "./routes/reservations.routes";
+import adminRoutes from "./routes/admin.routes";
 
 const app = express();
 app.use(cors());
@@ -16,6 +17,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/movies", moviesRoutes);
 app.use("/api/screenings", screeningsRoutes);
 app.use("/api/reservations", reservationsRoutes);
+app.use("/api/admin", adminRoutes);
 
 app.get("/", (req: Request, res: Response) =>
   res.json({ message: "API Cinéma Avenida 🎬" })

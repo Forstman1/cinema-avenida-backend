@@ -3,9 +3,9 @@ const bcrypt = require("bcrypt");
 
 const prisma = new PrismaClient();
 
-function todayAt(hour, minute) {
+function todayAtMidnight() {
   const d = new Date();
-  d.setHours(hour, minute, 0, 0);
+  d.setHours(0, 0, 0, 0);
   return d;
 }
 
@@ -99,19 +99,21 @@ async function main() {
       { h: 22, m: 30 },
     ];
 
+    const screeningDate = todayAtMidnight();
+
     for (const { h, m } of showTimes) {
       const showTimeStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
       await prisma.screening.upsert({
         where: {
           movieId_date_showTime: {
             movieId: created.id,
-            date: todayAt(h, m),
+            date: screeningDate,
             showTime: showTimeStr,
           },
         },
         update: {},
         create: {
-          date: todayAt(h, m),
+          date: screeningDate,
           showTime: showTimeStr,
           movieId: created.id,
         },

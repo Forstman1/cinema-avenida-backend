@@ -1,8 +1,60 @@
 import { Request, Response } from "express";
 import prisma from "../config/prisma";
 
+function getStartOfWeek(date: Date): Date {
+  const d = new Date(date);
+  const day = d.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // shift to Monday
+  d.setDate(diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
 // GET /api/movies — liste tous les films
+// Query: ?current=true → retourne le programme de la semaine en cours (films ayant
+// au moins une séance à partir du lundi 00:00) avec leurs séances incluses.
+//
+// On filtre par séances plutôt qu'en stockant un flag "active" sur le film :
+// le programme est piloté par les séances, pas par les films. Un film est visible
+// et réservable uniquement s'il a au moins une séance future. Pas besoin d'activer
+// ou désactiver manuellement — le temps fait le ménage automatiquement. Les
+// anciennes données restent en base pour l'historique et les stats, l'application
+// reste propre.
 export async function getAllMovies(req: Request, res: Response): Promise<void> {
+  const current = req.query.current === "true";
+
+  if (current) {
+    const monday = getStartOfWeek(new Date());
+
+    const movies = await prisma.movie.findMany({
+      where: {
+        screenings: {
+          some: {
+            date: { gte: monday },
+          },
+        },
+      },
+      include: {
+        screenings: {
+          where: {
+            date: { gte: monday },
+          },
+          select: {
+            id: true,
+            date: true,
+            showTime: true,
+          },
+          orderBy: [{ date: "asc" }, { showTime: "asc" }],
+        },
+      },
+      orderBy: { title: "asc" },
+    });
+
+    res.json(movies);
+    return;
+  }
+
+  // Admin / liste complète : films sans leurs séances
   const movies = await prisma.movie.findMany({
     orderBy: { title: "asc" },
   });
