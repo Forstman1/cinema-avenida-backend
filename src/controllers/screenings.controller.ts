@@ -1,5 +1,11 @@
 import { Request, Response } from "express";
 import prisma from "../config/prisma";
+import {
+  addCalendarDays,
+  dateKeyToDate,
+  getStoredCalendarDate,
+  isValidDateKey,
+} from "../utils/cinema-time";
 
 // GET /api/screenings?date=YYYY-MM-DD — liste les séances d'une journée (admin)
 export async function getScreeningsByDate(
@@ -8,16 +14,15 @@ export async function getScreeningsByDate(
 ): Promise<void> {
   const { date } = req.query;
 
-  if (!date || typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!date || typeof date !== "string" || !isValidDateKey(date)) {
     res
       .status(400)
       .json({ message: "Paramètre date requis au format YYYY-MM-DD" });
     return;
   }
 
-  const start = new Date(date);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
+  const start = dateKeyToDate(date);
+  const end = addCalendarDays(start, 1);
 
   const screenings = await prisma.screening.findMany({
     where: {
@@ -34,7 +39,12 @@ export async function getScreeningsByDate(
     orderBy: { showTime: "asc" },
   });
 
-  res.json(screenings);
+  res.json(
+    screenings.map((screening) => ({
+      ...screening,
+      date: getStoredCalendarDate(screening.date),
+    }))
+  );
 }
 
 // GET /api/screenings/:id/seats — liste les sièges avec leur statut pour une séance
@@ -58,22 +68,32 @@ export async function getSeatsByScreening(
     orderBy: [{ row: "asc" }, { number: "asc" }],
   });
 
+  const now = new Date();
   // Récupère les sièges déjà réservés/verrouillés pour cette séance
   const reservationSeats = await prisma.reservationSeat.findMany({
     where: {
       reservation: {
         screeningId,
-        status: "CONFIRMED",
+        status: { in: ["CONFIRMED", "EN_ATTENTE"] },
       },
+      OR: [
+        { reservation: { status: "CONFIRMED" } },
+        { lockedUntil: { gt: now } },
+      ],
+    },
+    include: {
+      reservation: { select: { status: true } },
     },
   });
 
   // Construit une map seatId -> statut
   const seatStatus = new Map<number, string>();
   for (const rs of reservationSeats) {
-    const isLocked =
-      rs.lockedUntil && new Date(rs.lockedUntil) > new Date();
-    seatStatus.set(rs.seatId, isLocked ? "VERROUILLE" : "OCCUPE");
+    const isPending =
+      rs.reservation.status === "EN_ATTENTE" &&
+      rs.lockedUntil !== null &&
+      rs.lockedUntil > now;
+    seatStatus.set(rs.seatId, isPending ? "VERROUILLE" : "OCCUPE");
   }
 
   // Attache le statut à chaque siège (LIBRE par défaut)
@@ -111,12 +131,12 @@ export async function createScreening(
     return;
   }
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!isValidDateKey(date)) {
     res.status(400).json({ message: "date doit être au format YYYY-MM-DD" });
     return;
   }
 
-  if (!/^\d{2}:\d{2}$/.test(showTime)) {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(showTime)) {
     res.status(400).json({ message: "showTime doit être au format HH:MM" });
     return;
   }
@@ -133,7 +153,7 @@ export async function createScreening(
     const screening = await prisma.screening.create({
       data: {
         movieId: numericMovieId,
-        date: new Date(date),
+        date: dateKeyToDate(date),
         showTime,
       },
     });

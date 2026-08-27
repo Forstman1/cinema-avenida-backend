@@ -9,6 +9,7 @@ exports.getMyReservations = getMyReservations;
 exports.cancelReservation = cancelReservation;
 const crypto_1 = __importDefault(require("crypto"));
 const prisma_1 = __importDefault(require("../config/prisma"));
+const cinema_time_1 = require("../utils/cinema-time");
 const SEAT_PRICES = {
     CLUB: 45,
     NORMAL: 60,
@@ -22,6 +23,7 @@ async function lockSeats(req, res) {
         res.status(400).json({ message: "screeningId et seatIds sont obligatoires" });
         return;
     }
+    const now = new Date();
     const result = await prisma_1.default.$transaction(async (tx) => {
         // 1. Vérifie que la séance existe
         const screening = await tx.screening.findUnique({
@@ -29,6 +31,9 @@ async function lockSeats(req, res) {
         });
         if (!screening)
             return { error: "screening_not_found" };
+        if ((0, cinema_time_1.getScreeningDateTime)(screening.date, screening.showTime).getTime() <= now.getTime()) {
+            return { error: "screening_in_past" };
+        }
         // 2. Vérifie que l'utilisateur n'a pas déjà une réservation en attente verrouillée
         const activePending = await tx.reservation.findFirst({
             where: {
@@ -36,7 +41,7 @@ async function lockSeats(req, res) {
                 status: "EN_ATTENTE",
                 reservationSeats: {
                     some: {
-                        lockedUntil: { gt: new Date() },
+                        lockedUntil: { gt: now },
                     },
                 },
             },
@@ -66,7 +71,7 @@ async function lockSeats(req, res) {
                 },
                 OR: [
                     { reservation: { status: "CONFIRMED" } },
-                    { lockedUntil: { gt: new Date() } },
+                    { lockedUntil: { gt: now } },
                 ],
             },
             include: {
@@ -111,6 +116,9 @@ async function lockSeats(req, res) {
         if (result.error === "screening_not_found") {
             res.status(404).json({ message: "Séance non trouvée" });
         }
+        else if (result.error === "screening_in_past") {
+            res.status(400).json({ message: "Impossible de réserver une séance passée" });
+        }
         else if (result.error === "pending_exists") {
             res.status(409).json({
                 message: "Vous avez déjà une réservation en cours. Terminez-la ou laissez-la expirer.",
@@ -128,7 +136,13 @@ async function lockSeats(req, res) {
         }
         return;
     }
-    res.status(201).json(result.reservation);
+    res.status(201).json({
+        ...result.reservation,
+        screening: {
+            ...result.reservation.screening,
+            date: (0, cinema_time_1.getStoredCalendarDate)(result.reservation.screening.date),
+        },
+    });
 }
 // POST /api/reservations/:id/pay
 async function payReservation(req, res) {
@@ -200,7 +214,13 @@ async function getMyReservations(req, res) {
         },
         orderBy: { reservedAt: "desc" },
     });
-    res.json(reservations);
+    res.json(reservations.map((reservation) => ({
+        ...reservation,
+        screening: {
+            ...reservation.screening,
+            date: (0, cinema_time_1.getStoredCalendarDate)(reservation.screening.date),
+        },
+    })));
 }
 // DELETE /api/reservations/:id
 async function cancelReservation(req, res) {
@@ -224,7 +244,8 @@ async function cancelReservation(req, res) {
         });
         return;
     }
-    const twoHoursBefore = new Date(reservation.screening.date.getTime() - 2 * 60 * 60 * 1000);
+    const screeningDateTime = (0, cinema_time_1.getScreeningDateTime)(reservation.screening.date, reservation.screening.showTime);
+    const twoHoursBefore = new Date(screeningDateTime.getTime() - 2 * 60 * 60 * 1000);
     if (new Date() >= twoHoursBefore) {
         res.status(400).json({
             message: "Annulation impossible moins de 2 heures avant la séance",

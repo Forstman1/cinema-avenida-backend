@@ -97,6 +97,10 @@ function cinemaDateKey(date) {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+function storedCalendarDateKey(date) {
+  return date.toISOString().slice(0, 10);
+}
+
 // Convert numeric date parts to UTC midnight; never parse a YYYY-MM-DD string.
 function dateKeyToDate(dateKey) {
   const [year, month, day] = dateKey.split("-").map(Number);
@@ -284,13 +288,13 @@ async function main() {
   const monday = startOfCinemaWeek(now);
   const todayKey = cinemaDateKey(now);
   const todayOffset = Math.round((dateKeyToDate(todayKey).getTime() - monday.getTime()) / 86400000);
-  const tomorrowKey = cinemaDateKey(addDays(dateKeyToDate(todayKey), 1));
+  const tomorrowKey = storedCalendarDateKey(addDays(dateKeyToDate(todayKey), 1));
   const nextMonday = addDays(monday, 7);
-  const nextMondayKey = cinemaDateKey(nextMonday);
-  const nextWeekOnlyKey = cinemaDateKey(addDays(nextMonday, 2));
-  const emptyFutureKey = cinemaDateKey(addDays(nextMonday, 6));
-  const recentDateKey = cinemaDateKey(addDays(monday, -7));
-  const recentDuneDateKey = cinemaDateKey(addDays(monday, -6));
+  const nextMondayKey = storedCalendarDateKey(nextMonday);
+  const nextWeekOnlyKey = storedCalendarDateKey(addDays(nextMonday, 2));
+  const emptyFutureKey = storedCalendarDateKey(addDays(nextMonday, 6));
+  const recentDateKey = storedCalendarDateKey(addDays(monday, -7));
+  const recentDuneDateKey = storedCalendarDateKey(addDays(monday, -6));
 
   const screeningByKey = new Map();
   const requestedSchedule = [];
@@ -319,7 +323,7 @@ async function main() {
     if (offset > 6) break;
     const showTimes = ["18:00", "20:30", "22:30"];
     laterMovieSets[index].forEach((title, movieIndex) => {
-      addRequestedScreening(title, cinemaDateKey(addDays(monday, offset)), showTimes[movieIndex]);
+      addRequestedScreening(title, storedCalendarDateKey(addDays(monday, offset)), showTimes[movieIndex]);
     });
   }
 
@@ -411,20 +415,21 @@ async function validateSeed({ users, movies, fixture, seatRecords, todayKey, mon
   for (const title of SEEDED_MOVIE_TITLES) expect(Boolean(movies[title]), `Film absent: ${title}`);
 
   const allScreenings = await prisma.screening.findMany({ include: { movie: true }, orderBy: [{ date: "asc" }, { showTime: "asc" }, { id: "asc" }] });
-  const uniqueCompositeKeys = new Set(allScreenings.map((screening) => `${screening.movieId}|${screening.date.toISOString()}|${screening.showTime}`));
+  const uniqueCompositeKeys = new Set(allScreenings.map((screening) => `${screening.movieId}|${storedCalendarDateKey(screening.date)}|${screening.showTime}`));
   expect(uniqueCompositeKeys.size === allScreenings.length, "Des doublons de (movieId, date, showTime) existent");
   const timeKeys = new Set();
   for (const screening of allScreenings) {
-    const key = `${screening.date.toISOString().slice(0, 10)}|${screening.showTime}`;
+    const key = `${storedCalendarDateKey(screening.date)}|${screening.showTime}`;
     expect(!timeKeys.has(key), `Chevauchement le ${key} dans l'auditorium unique`);
     timeKeys.add(key);
     expect(/^([01]\d|2[0-3]):[0-5]\d$/.test(screening.showTime), `Heure invalide: ${screening.showTime}`);
   }
-  expect(allScreenings.some((screening) => cinemaDateKey(screening.date) === todayKey), "Aucune séance le jour courant");
+  expect(allScreenings.some((screening) => storedCalendarDateKey(screening.date) === todayKey), "Aucune séance le jour courant");
+  expect(allScreenings.some((screening) => storedCalendarDateKey(screening.date) > todayKey), "Aucune séance sur un jour futur");
 
   const screeningsByDate = new Map();
   for (const screening of allScreenings) {
-    const key = cinemaDateKey(screening.date);
+    const key = storedCalendarDateKey(screening.date);
     screeningsByDate.set(key, (screeningsByDate.get(key) || 0) + 1);
   }
   expect(!screeningsByDate.has(emptyFutureKey), `La date future ${emptyFutureKey} doit être vide`);
@@ -432,10 +437,10 @@ async function validateSeed({ users, movies, fixture, seatRecords, todayKey, mon
 
   const movieScreenings = await prisma.screening.findMany({ where: { movieId: { in: Object.values(movies).map((movie) => movie.id) } }, orderBy: { date: "asc" } });
   const screeningsFor = (title) => movieScreenings.filter((screening) => screening.movieId === movies[title].id);
-  const duneDates = new Set(screeningsFor("Dune : Deuxième Partie").map((screening) => cinemaDateKey(screening.date)));
+  const duneDates = new Set(screeningsFor("Dune : Deuxième Partie").map((screening) => storedCalendarDateKey(screening.date)));
   expect(duneDates.size >= 2, "Un film doit être programmé sur plusieurs dates");
-  expect(screeningsFor("Film terminé").length > 0 && screeningsFor("Film terminé").every((screening) => cinemaDateKey(screening.date) < todayKey), "Film terminé doit avoir uniquement des séances passées");
-  expect(screeningsFor("Film à venir la semaine prochaine").length > 0 && screeningsFor("Film à venir la semaine prochaine").every((screening) => cinemaDateKey(screening.date) >= nextMondayKey), "Film à venir doit avoir uniquement des séances de la semaine prochaine");
+  expect(screeningsFor("Film terminé").length > 0 && screeningsFor("Film terminé").every((screening) => storedCalendarDateKey(screening.date) < todayKey), "Film terminé doit avoir uniquement des séances passées");
+  expect(screeningsFor("Film à venir la semaine prochaine").length > 0 && screeningsFor("Film à venir la semaine prochaine").every((screening) => storedCalendarDateKey(screening.date) >= nextMondayKey), "Film à venir doit avoir uniquement des séances de la semaine prochaine");
   expect(screeningsFor("Film sans programmation").length === 0, "Film sans programmation ne doit avoir aucune séance");
 
   for (const [reservation, amount, message] of [
@@ -460,7 +465,7 @@ async function validateSeed({ users, movies, fixture, seatRecords, todayKey, mon
   const expiredLocks = await prisma.reservationSeat.findMany({ where: { reservationId: fixture.expiredPending.id } });
   expect(activeLocks.length > 0 && activeLocks.every((seat) => seat.lockedUntil > new Date()), "Le verrou actif doit expirer dans le futur");
   expect(expiredLocks.length > 0 && expiredLocks.every((seat) => seat.lockedUntil < new Date()), "Le verrou expiré doit être dans le passé");
-  expect(allScreenings.some((screening) => screening.date >= monday && screening.date < addDays(monday, 7)), "Aucune séance dans la semaine courante");
+  expect(allScreenings.some((screening) => storedCalendarDateKey(screening.date) >= storedCalendarDateKey(monday) && storedCalendarDateKey(screening.date) < storedCalendarDateKey(addDays(monday, 7))), "Aucune séance dans la semaine courante");
   expect(Boolean(soldOutScreening), "Séance sold-out introuvable");
   if (failures.length > 0) throw new Error(`Validation du seed échouée:\n- ${failures.join("\n- ")}`);
   console.log("✅ Validation du seed réussie: sièges, programme, réservations et billets cohérents.");
@@ -479,7 +484,7 @@ async function printSummary({ users, movies, fixture, todayKey, todayOffset, mon
     ["historique annulée", fixture.cancelled], ["sold-out", fixture.soldOut],
   ];
   console.log("\n📋 Résumé des fixtures (dates cinéma: lundi à dimanche)");
-  console.log(`Dates: semaine courante ${cinemaDateKey(monday)} → ${cinemaDateKey(addDays(monday, 6))}; aujourd'hui ${todayKey}`);
+  console.log(`Dates: semaine courante ${storedCalendarDateKey(monday)} → ${storedCalendarDateKey(addDays(monday, 6))}; aujourd'hui ${todayKey}`);
   console.log(`Date future vide: ${emptyFutureKey}; semaine suivante à partir du ${nextMondayKey}`);
   if (todayOffset === 6) {
     console.log("Note: aujourd'hui est dimanche; la date vide est placée la semaine suivante car il ne reste aucun jour dans la semaine courante.");
@@ -491,7 +496,7 @@ async function printSummary({ users, movies, fixture, todayKey, todayOffset, mon
   console.log(`\nSéances: ${screenings.length}`);
   let previousDate = null;
   for (const screening of screenings) {
-    const date = cinemaDateKey(screening.date);
+    const date = storedCalendarDateKey(screening.date);
     if (date !== previousDate) { console.log(`  ${date}:`); previousDate = date; }
     console.log(`    ${screening.showTime} — ${screening.movie.title} (#${screening.id})`);
   }

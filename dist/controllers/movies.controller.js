@@ -9,45 +9,7 @@ exports.getScreeningsByMovie = getScreeningsByMovie;
 exports.createMovie = createMovie;
 exports.updateMovie = updateMovie;
 const prisma_1 = __importDefault(require("../config/prisma"));
-const CINEMA_TIMEZONE = process.env.CINEMA_TIMEZONE || "Africa/Casablanca";
-const cinemaDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: CINEMA_TIMEZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-});
-function getCinemaDateTime(date) {
-    const parts = Object.fromEntries(cinemaDateTimeFormatter.formatToParts(date).map(({ type, value }) => [
-        type,
-        value,
-    ]));
-    return {
-        date: `${parts.year}-${parts.month}-${parts.day}`,
-        time: `${parts.hour}:${parts.minute}:${parts.second}`,
-    };
-}
-function isValidDateKey(date) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        return false;
-    }
-    const [year, month, day] = date.split("-").map(Number);
-    const parsed = new Date(Date.UTC(year, month - 1, day));
-    return (parsed.getUTCFullYear() === year &&
-        parsed.getUTCMonth() === month - 1 &&
-        parsed.getUTCDate() === day);
-}
-function getStartOfWeek(date) {
-    const { date: cinemaDate } = getCinemaDateTime(date);
-    const [year, month, day] = cinemaDate.split("-").map(Number);
-    const monday = new Date(Date.UTC(year, month - 1, day));
-    const weekday = monday.getUTCDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
-    monday.setUTCDate(monday.getUTCDate() - (weekday === 0 ? 6 : weekday - 1));
-    return monday;
-}
+const cinema_time_1 = require("../utils/cinema-time");
 // GET /api/movies — liste tous les films
 // Query: ?current=true → retourne le programme de la semaine en cours (films ayant
 // au moins une séance à partir du lundi 00:00) avec leurs séances incluses.
@@ -61,9 +23,9 @@ function getStartOfWeek(date) {
 async function getAllMovies(req, res) {
     const current = req.query.current === "true";
     if (current) {
-        const monday = getStartOfWeek(new Date());
-        const nextMonday = new Date(monday);
-        nextMonday.setUTCDate(nextMonday.getUTCDate() + 7);
+        const now = new Date();
+        const monday = (0, cinema_time_1.getStartOfCinemaWeek)(now);
+        const nextMonday = (0, cinema_time_1.addCalendarDays)(monday, 7);
         const movies = await prisma_1.default.movie.findMany({
             where: {
                 screenings: {
@@ -87,13 +49,19 @@ async function getAllMovies(req, res) {
             },
             orderBy: { title: "asc" },
         });
-        res.json(movies.map((movie) => ({
+        const checkedAt = new Date();
+        const currentMovies = movies
+            .map((movie) => ({
             ...movie,
-            screenings: movie.screenings.map((screening) => ({
+            screenings: movie.screenings
+                .filter((screening) => (0, cinema_time_1.isScreeningInFuture)(screening, checkedAt))
+                .map((screening) => ({
                 ...screening,
-                date: getCinemaDateTime(screening.date).date,
+                date: (0, cinema_time_1.getStoredCalendarDate)(screening.date),
             })),
-        })));
+        }))
+            .filter((movie) => movie.screenings.length > 0);
+        res.json(currentMovies);
         return;
     }
     // Admin / liste complète : films sans leurs séances
@@ -117,11 +85,12 @@ async function getScreeningsByMovie(req, res) {
     const movieId = Number(req.params.id);
     const requestedDate = req.query.date;
     if (requestedDate !== undefined &&
-        (typeof requestedDate !== "string" || !isValidDateKey(requestedDate))) {
+        (typeof requestedDate !== "string" || !(0, cinema_time_1.isValidDateKey)(requestedDate))) {
         res.status(400).json({ message: "date doit être au format YYYY-MM-DD" });
         return;
     }
-    const now = getCinemaDateTime(new Date());
+    const now = new Date();
+    const checkedAt = new Date();
     const screenings = await prisma_1.default.screening.findMany({
         where: { movieId },
         orderBy: [{ date: "asc" }, { showTime: "asc" }],
@@ -129,17 +98,17 @@ async function getScreeningsByMovie(req, res) {
     const futureScreenings = screenings
         .map((screening) => ({
         screening,
-        cinemaDateTime: getCinemaDateTime(screening.date),
+        dateKey: (0, cinema_time_1.getStoredCalendarDate)(screening.date),
+        screeningDateTime: (0, cinema_time_1.getScreeningDateTime)(screening.date, screening.showTime),
     }))
-        .filter(({ cinemaDateTime }) => {
-        if (requestedDate && cinemaDateTime.date !== requestedDate) {
+        .filter(({ dateKey, screeningDateTime }) => {
+        if (requestedDate && dateKey !== requestedDate) {
             return false;
         }
-        return (cinemaDateTime.date > now.date ||
-            (cinemaDateTime.date === now.date && cinemaDateTime.time > now.time));
+        return screeningDateTime.getTime() > now.getTime();
     })
         .sort((a, b) => {
-        const dateComparison = a.cinemaDateTime.date.localeCompare(b.cinemaDateTime.date);
+        const dateComparison = a.dateKey.localeCompare(b.dateKey);
         if (dateComparison !== 0) {
             return dateComparison;
         }
@@ -148,7 +117,7 @@ async function getScreeningsByMovie(req, res) {
             ? timeComparison
             : a.screening.id - b.screening.id;
     });
-    const screeningsWithAvailability = await Promise.all(futureScreenings.map(async ({ screening, cinemaDateTime }) => {
+    const screeningsWithAvailability = await Promise.all(futureScreenings.map(async ({ screening, dateKey }) => {
         const taken = await prisma_1.default.reservationSeat.count({
             where: {
                 reservation: {
@@ -157,13 +126,13 @@ async function getScreeningsByMovie(req, res) {
                 },
                 OR: [
                     { reservation: { status: "CONFIRMED" } },
-                    { lockedUntil: { gt: new Date() } },
+                    { lockedUntil: { gt: checkedAt } },
                 ],
             },
         });
         return {
             ...screening,
-            date: cinemaDateTime.date,
+            date: dateKey,
             availableSeats: Math.max(0, 120 - taken),
         };
     }));

@@ -2,6 +2,10 @@ import { Request, Response } from "express";
 import crypto from "crypto";
 import prisma from "../config/prisma";
 import { AuthRequest } from "../middleware/auth";
+import {
+  getScreeningDateTime,
+  getStoredCalendarDate,
+} from "../utils/cinema-time";
 
 const SEAT_PRICES: Record<string, number> = {
   CLUB: 45,
@@ -22,12 +26,17 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  const now = new Date();
   const result = await prisma.$transaction(async (tx) => {
     // 1. Vérifie que la séance existe
     const screening = await tx.screening.findUnique({
       where: { id: Number(screeningId) },
     });
     if (!screening) return { error: "screening_not_found" };
+
+    if (getScreeningDateTime(screening.date, screening.showTime).getTime() <= now.getTime()) {
+      return { error: "screening_in_past" };
+    }
 
     // 2. Vérifie que l'utilisateur n'a pas déjà une réservation en attente verrouillée
     const activePending = await tx.reservation.findFirst({
@@ -36,7 +45,7 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
         status: "EN_ATTENTE",
         reservationSeats: {
           some: {
-            lockedUntil: { gt: new Date() },
+            lockedUntil: { gt: now },
           },
         },
       },
@@ -69,7 +78,7 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
         },
         OR: [
           { reservation: { status: "CONFIRMED" } },
-          { lockedUntil: { gt: new Date() } },
+          { lockedUntil: { gt: now } },
         ],
       },
       include: {
@@ -121,6 +130,8 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
   if ("error" in result) {
     if (result.error === "screening_not_found") {
       res.status(404).json({ message: "Séance non trouvée" });
+    } else if (result.error === "screening_in_past") {
+      res.status(400).json({ message: "Impossible de réserver une séance passée" });
     } else if (result.error === "pending_exists") {
       res.status(409).json({
         message:
@@ -138,7 +149,13 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  res.status(201).json(result.reservation);
+  res.status(201).json({
+    ...result.reservation,
+    screening: {
+      ...result.reservation.screening,
+      date: getStoredCalendarDate(result.reservation.screening.date),
+    },
+  });
 }
 
 // POST /api/reservations/:id/pay
@@ -221,7 +238,15 @@ export async function getMyReservations(
     orderBy: { reservedAt: "desc" },
   });
 
-  res.json(reservations);
+  res.json(
+    reservations.map((reservation) => ({
+      ...reservation,
+      screening: {
+        ...reservation.screening,
+        date: getStoredCalendarDate(reservation.screening.date),
+      },
+    }))
+  );
 }
 
 // DELETE /api/reservations/:id
@@ -252,8 +277,12 @@ export async function cancelReservation(
     return;
   }
 
+  const screeningDateTime = getScreeningDateTime(
+    reservation.screening.date,
+    reservation.screening.showTime
+  );
   const twoHoursBefore = new Date(
-    reservation.screening.date.getTime() - 2 * 60 * 60 * 1000
+    screeningDateTime.getTime() - 2 * 60 * 60 * 1000
   );
   if (new Date() >= twoHoursBefore) {
     res.status(400).json({
