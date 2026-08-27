@@ -105,8 +105,24 @@ export async function createScreening(
     return;
   }
 
+  const numericMovieId = Number(movieId);
+  if (!Number.isInteger(numericMovieId) || numericMovieId <= 0) {
+    res.status(400).json({ message: "movieId doit être un entier valide" });
+    return;
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ message: "date doit être au format YYYY-MM-DD" });
+    return;
+  }
+
+  if (!/^\d{2}:\d{2}$/.test(showTime)) {
+    res.status(400).json({ message: "showTime doit être au format HH:MM" });
+    return;
+  }
+
   const movie = await prisma.movie.findUnique({
-    where: { id: Number(movieId) },
+    where: { id: numericMovieId },
   });
   if (!movie) {
     res.status(404).json({ message: "Film non trouvé" });
@@ -116,12 +132,29 @@ export async function createScreening(
   try {
     const screening = await prisma.screening.create({
       data: {
-        movieId: Number(movieId),
+        movieId: numericMovieId,
         date: new Date(date),
         showTime,
       },
     });
-    res.status(201).json(screening);
+
+    const totalSeats = await prisma.seat.count();
+    const occupiedSeats = await prisma.reservationSeat.count({
+      where: {
+        reservation: {
+          screeningId: screening.id,
+          status: { not: "CANCELLED" },
+        },
+      },
+    });
+
+    res.status(201).json({
+      id: screening.id,
+      date: screening.date.toISOString().split("T")[0],
+      showTime: screening.showTime,
+      movieId: screening.movieId,
+      availableSeats: totalSeats - occupiedSeats,
+    });
   } catch {
     res.status(409).json({ message: "Conflit : cette séance existe déjà" });
   }

@@ -9,13 +9,44 @@ exports.getScreeningsByMovie = getScreeningsByMovie;
 exports.createMovie = createMovie;
 exports.updateMovie = updateMovie;
 const prisma_1 = __importDefault(require("../config/prisma"));
+const CINEMA_TIMEZONE = process.env.CINEMA_TIMEZONE || "Africa/Casablanca";
+const cinemaDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: CINEMA_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+});
+function getCinemaDateTime(date) {
+    const parts = Object.fromEntries(cinemaDateTimeFormatter.formatToParts(date).map(({ type, value }) => [
+        type,
+        value,
+    ]));
+    return {
+        date: `${parts.year}-${parts.month}-${parts.day}`,
+        time: `${parts.hour}:${parts.minute}:${parts.second}`,
+    };
+}
+function isValidDateKey(date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return false;
+    }
+    const [year, month, day] = date.split("-").map(Number);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    return (parsed.getUTCFullYear() === year &&
+        parsed.getUTCMonth() === month - 1 &&
+        parsed.getUTCDate() === day);
+}
 function getStartOfWeek(date) {
-    const d = new Date(date);
-    const day = d.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1); // shift to Monday
-    d.setDate(diff);
-    d.setHours(0, 0, 0, 0);
-    return d;
+    const { date: cinemaDate } = getCinemaDateTime(date);
+    const [year, month, day] = cinemaDate.split("-").map(Number);
+    const monday = new Date(Date.UTC(year, month - 1, day));
+    const weekday = monday.getUTCDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+    monday.setUTCDate(monday.getUTCDate() - (weekday === 0 ? 6 : weekday - 1));
+    return monday;
 }
 // GET /api/movies — liste tous les films
 // Query: ?current=true → retourne le programme de la semaine en cours (films ayant
@@ -31,18 +62,20 @@ async function getAllMovies(req, res) {
     const current = req.query.current === "true";
     if (current) {
         const monday = getStartOfWeek(new Date());
+        const nextMonday = new Date(monday);
+        nextMonday.setUTCDate(nextMonday.getUTCDate() + 7);
         const movies = await prisma_1.default.movie.findMany({
             where: {
                 screenings: {
                     some: {
-                        date: { gte: monday },
+                        date: { gte: monday, lt: nextMonday },
                     },
                 },
             },
             include: {
                 screenings: {
                     where: {
-                        date: { gte: monday },
+                        date: { gte: monday, lt: nextMonday },
                     },
                     select: {
                         id: true,
@@ -54,7 +87,13 @@ async function getAllMovies(req, res) {
             },
             orderBy: { title: "asc" },
         });
-        res.json(movies);
+        res.json(movies.map((movie) => ({
+            ...movie,
+            screenings: movie.screenings.map((screening) => ({
+                ...screening,
+                date: getCinemaDateTime(screening.date).date,
+            })),
+        })));
         return;
     }
     // Admin / liste complète : films sans leurs séances
@@ -76,11 +115,40 @@ async function getMovieById(req, res) {
 // GET /api/movies/:id/screenings — séances d'un film
 async function getScreeningsByMovie(req, res) {
     const movieId = Number(req.params.id);
+    const requestedDate = req.query.date;
+    if (requestedDate !== undefined &&
+        (typeof requestedDate !== "string" || !isValidDateKey(requestedDate))) {
+        res.status(400).json({ message: "date doit être au format YYYY-MM-DD" });
+        return;
+    }
+    const now = getCinemaDateTime(new Date());
     const screenings = await prisma_1.default.screening.findMany({
         where: { movieId },
         orderBy: [{ date: "asc" }, { showTime: "asc" }],
     });
-    const screeningsWithAvailability = await Promise.all(screenings.map(async (screening) => {
+    const futureScreenings = screenings
+        .map((screening) => ({
+        screening,
+        cinemaDateTime: getCinemaDateTime(screening.date),
+    }))
+        .filter(({ cinemaDateTime }) => {
+        if (requestedDate && cinemaDateTime.date !== requestedDate) {
+            return false;
+        }
+        return (cinemaDateTime.date > now.date ||
+            (cinemaDateTime.date === now.date && cinemaDateTime.time > now.time));
+    })
+        .sort((a, b) => {
+        const dateComparison = a.cinemaDateTime.date.localeCompare(b.cinemaDateTime.date);
+        if (dateComparison !== 0) {
+            return dateComparison;
+        }
+        const timeComparison = a.screening.showTime.localeCompare(b.screening.showTime);
+        return timeComparison !== 0
+            ? timeComparison
+            : a.screening.id - b.screening.id;
+    });
+    const screeningsWithAvailability = await Promise.all(futureScreenings.map(async ({ screening, cinemaDateTime }) => {
         const taken = await prisma_1.default.reservationSeat.count({
             where: {
                 reservation: {
@@ -95,6 +163,7 @@ async function getScreeningsByMovie(req, res) {
         });
         return {
             ...screening,
+            date: cinemaDateTime.date,
             availableSeats: Math.max(0, 120 - taken),
         };
     }));
