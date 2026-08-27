@@ -1,13 +1,23 @@
 import { Request, Response } from "express";
 import prisma from "../config/prisma";
+import { Prisma } from "@prisma/client";
+import { sendApiError } from "../utils/api-response";
+import { toMovieDTO, toScreeningDTO } from "../utils/api-mappers";
+import {
+  parseBooleanQuery,
+  parseMovieCreateBody,
+  parseMovieUpdateBody,
+  parseOptionalDateQuery,
+  parsePositiveId,
+} from "../validation/api";
 import {
   addCalendarDays,
   getScreeningDateTime,
   getStartOfCinemaWeek,
   getStoredCalendarDate,
   isScreeningInFuture,
-  isValidDateKey,
 } from "../utils/cinema-time";
+import { CINEMA_CONFIG } from "../config/cinema";
 
 // GET /api/movies — liste tous les films
 // Query: ?current=true → retourne le programme de la semaine en cours (films ayant
@@ -20,7 +30,12 @@ import {
 // anciennes données restent en base pour l'historique et les stats, l'application
 // reste propre.
 export async function getAllMovies(req: Request, res: Response): Promise<void> {
-  const current = req.query.current === "true";
+  const parsedCurrent = parseBooleanQuery(req.query.current, "current");
+  if (!parsedCurrent.ok) {
+    sendApiError(res, 400, parsedCurrent.error);
+    return;
+  }
+  const current = parsedCurrent.value === true;
 
   if (current) {
     const now = new Date();
@@ -44,6 +59,7 @@ export async function getAllMovies(req: Request, res: Response): Promise<void> {
             id: true,
             date: true,
             showTime: true,
+            movieId: true,
           },
           orderBy: [{ date: "asc" }, { showTime: "asc" }],
         },
@@ -54,13 +70,10 @@ export async function getAllMovies(req: Request, res: Response): Promise<void> {
     const checkedAt = new Date();
     const currentMovies = movies
       .map((movie) => ({
-        ...movie,
+        ...toMovieDTO(movie),
         screenings: movie.screenings
           .filter((screening) => isScreeningInFuture(screening, checkedAt))
-          .map((screening) => ({
-            ...screening,
-            date: getStoredCalendarDate(screening.date),
-          })),
+          .map(toScreeningDTO),
       }))
       .filter((movie) => movie.screenings.length > 0);
 
@@ -72,20 +85,25 @@ export async function getAllMovies(req: Request, res: Response): Promise<void> {
   const movies = await prisma.movie.findMany({
     orderBy: { title: "asc" },
   });
-  res.json(movies);
+  res.json(movies.map(toMovieDTO));
 }
 
 // GET /api/movies/:id — détails d'un film
 export async function getMovieById(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
+  const parsedId = parsePositiveId(req.params.id, "Film");
+  if (!parsedId.ok) {
+    sendApiError(res, 400, parsedId.error);
+    return;
+  }
+  const id = parsedId.value;
   const movie = await prisma.movie.findUnique({ where: { id } });
 
   if (!movie) {
-    res.status(404).json({ message: "Film non trouvé" });
+    sendApiError(res, 404, { message: "Film non trouvé", code: "MOVIE_NOT_FOUND" });
     return;
   }
 
-  res.json(movie);
+  res.json(toMovieDTO(movie));
 }
 
 // GET /api/movies/:id/screenings — séances d'un film
@@ -93,16 +111,18 @@ export async function getScreeningsByMovie(
   req: Request,
   res: Response
 ): Promise<void> {
-  const movieId = Number(req.params.id);
-  const requestedDate = req.query.date;
-
-  if (
-    requestedDate !== undefined &&
-    (typeof requestedDate !== "string" || !isValidDateKey(requestedDate))
-  ) {
-    res.status(400).json({ message: "date doit être au format YYYY-MM-DD" });
+  const parsedMovieId = parsePositiveId(req.params.id, "Film");
+  if (!parsedMovieId.ok) {
+    sendApiError(res, 400, parsedMovieId.error);
     return;
   }
+  const parsedDate = parseOptionalDateQuery(req.query.date);
+  if (!parsedDate.ok) {
+    sendApiError(res, 400, parsedDate.error);
+    return;
+  }
+  const movieId = parsedMovieId.value;
+  const requestedDate = parsedDate.value;
 
   const now = new Date();
   const checkedAt = new Date();
@@ -153,71 +173,70 @@ export async function getScreeningsByMovie(
         },
       });
 
-      return {
+      return toScreeningDTO({
         ...screening,
-        date: dateKey,
-        availableSeats: Math.max(0, 120 - taken),
-      };
+        availableSeats: Math.max(0, CINEMA_CONFIG.capacity - taken),
+      });
     })
   );
 
   res.json(screeningsWithAvailability);
 }
 
-interface MovieBody {
-  title: string;
-  synopsis: string;
-  duration: number;
-  genre: string;
-  poster?: string;
-}
-
 // POST /api/movies — créer un film (admin)
 export async function createMovie(req: Request, res: Response): Promise<void> {
-  const { title, synopsis, duration, genre, poster } = req.body as MovieBody;
-
-  if (!title || !synopsis || !duration || !genre) {
-    res
-      .status(400)
-      .json({ message: "Champs obligatoires : title, synopsis, duration, genre" });
+  const parsed = parseMovieCreateBody(req.body);
+  if (!parsed.ok) {
+    sendApiError(res, 400, parsed.error);
     return;
   }
+  const { title, synopsis, duration, genre, poster } = parsed.value;
 
   const movie = await prisma.movie.create({
     data: {
       title,
       synopsis,
-      duration: Number(duration),
+      duration,
       genre,
       poster,
     },
   });
 
-  res.status(201).json(movie);
+  res.status(201).json(toMovieDTO(movie));
 }
 
 // PUT /api/movies/:id — modifier un film (admin)
 export async function updateMovie(req: Request, res: Response): Promise<void> {
-  const id = Number(req.params.id);
-  const { title, synopsis, duration, genre, poster } =
-    req.body as Partial<MovieBody>;
+  const parsedId = parsePositiveId(req.params.id, "Film");
+  if (!parsedId.ok) {
+    sendApiError(res, 400, parsedId.error);
+    return;
+  }
+  const parsed = parseMovieUpdateBody(req.body);
+  if (!parsed.ok) {
+    sendApiError(res, 400, parsed.error);
+    return;
+  }
+  const id = parsedId.value;
+  const { title, synopsis, duration, genre, poster } = parsed.value;
 
   const existing = await prisma.movie.findUnique({ where: { id } });
   if (!existing) {
-    res.status(404).json({ message: "Film non trouvé" });
+    sendApiError(res, 404, { message: "Film non trouvé", code: "MOVIE_NOT_FOUND" });
     return;
   }
 
+  const data: Prisma.MovieUpdateInput = {
+    title,
+    synopsis,
+    duration,
+    genre,
+    poster,
+  };
   const movie = await prisma.movie.update({
     where: { id },
-    data: {
-      title,
-      synopsis,
-      duration: duration ? Number(duration) : undefined,
-      genre,
-      poster,
-    },
+    data,
   });
 
-  res.json(movie);
+  res.json(toMovieDTO(movie));
 }

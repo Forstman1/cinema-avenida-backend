@@ -1,12 +1,14 @@
+require("dotenv/config");
 const { PrismaClient } = require("@prisma/client");
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
+const CINEMA_CONFIG = require("../config/cinema-config.json");
 
 const prisma = new PrismaClient();
-const CINEMA_TIMEZONE = process.env.CINEMA_TIMEZONE || "Africa/Casablanca";
+const CINEMA_TIMEZONE = process.env.CINEMA_TIMEZONE || CINEMA_CONFIG.timezone;
 const SEED_RESET = process.env.SEED_RESET === "true";
-
-const SEAT_PRICES = { CLUB: 45, NORMAL: 60, VIP: 90 };
+const [OPENING_SHOW_TIME, PRIME_SHOW_TIME, LATE_SHOW_TIME] = CINEMA_CONFIG.screeningSlots;
+const OFFICIAL_SHOW_TIMES = CINEMA_CONFIG.screeningSlots;
 
 const MOVIE_DATA = [
   {
@@ -190,11 +192,19 @@ async function ensureMovie(movieData) {
 }
 
 async function ensureScreening(movieId, dateKey, showTime) {
-  return prisma.screening.upsert({
-    where: { movieId_date_showTime: { movieId, date: dateKeyToDate(dateKey), showTime } },
-    update: {},
-    create: { movieId, date: dateKeyToDate(dateKey), showTime },
+  const date = dateKeyToDate(dateKey);
+  const existing = await prisma.screening.findUnique({
+    where: { date_showTime: { date, showTime } },
   });
+
+  if (existing) {
+    if (existing.movieId !== movieId) {
+      throw new Error(`Créneau déjà occupé le ${dateKey} à ${showTime}.`);
+    }
+    return existing;
+  }
+
+  return prisma.screening.create({ data: { movieId, date, showTime } });
 }
 
 async function ensureReservation({ userId, screeningId, seatIds, status, lockedUntil, totalAmount }) {
@@ -265,8 +275,12 @@ async function main() {
     D: "NORMAL", E: "NORMAL", F: "NORMAL", G: "NORMAL",
     H: "VIP", I: "VIP", J: "VIP",
   };
+  const seatsPerRow = CINEMA_CONFIG.capacity / rows.length;
+  if (!Number.isInteger(seatsPerRow)) {
+    throw new Error("La capacité doit être divisible par le nombre de rangées du seed.");
+  }
   for (const row of rows) {
-    for (let number = 1; number <= 12; number += 1) {
+    for (let number = 1; number <= seatsPerRow; number += 1) {
       await prisma.seat.upsert({
         where: { row_number: { row, number } },
         update: { category: categoryByRow[row] },
@@ -299,6 +313,9 @@ async function main() {
   const screeningByKey = new Map();
   const requestedSchedule = [];
   const addRequestedScreening = (title, dateKey, showTime) => {
+    if (!OFFICIAL_SHOW_TIMES.includes(showTime)) {
+      throw new Error(`Créneau officiel invalide: ${showTime}`);
+    }
     const key = `${dateKey}|${showTime}`;
     if (requestedSchedule.some((item) => `${item.dateKey}|${item.showTime}` === key)) {
       throw new Error(`Chevauchement de séance demandé le ${dateKey} à ${showTime}.`);
@@ -306,11 +323,11 @@ async function main() {
     requestedSchedule.push({ title, dateKey, showTime });
   };
 
-  addRequestedScreening("Dune : Deuxième Partie", todayKey, "18:00");
-  addRequestedScreening("Oppenheimer", todayKey, "20:30");
-  addRequestedScreening("Spider-Man : Across the Spider-Verse", todayKey, "22:30");
-  addRequestedScreening("Interstellar", tomorrowKey, "18:00");
-  addRequestedScreening("Parasite", tomorrowKey, "20:30");
+  addRequestedScreening("Dune : Deuxième Partie", todayKey, OPENING_SHOW_TIME);
+  addRequestedScreening("Oppenheimer", todayKey, PRIME_SHOW_TIME);
+  addRequestedScreening("Spider-Man : Across the Spider-Verse", todayKey, LATE_SHOW_TIME);
+  addRequestedScreening("Interstellar", tomorrowKey, OPENING_SHOW_TIME);
+  addRequestedScreening("Parasite", tomorrowKey, PRIME_SHOW_TIME);
 
   const laterMovieSets = [
     ["Le Comte de Monte-Cristo"], [],
@@ -321,17 +338,17 @@ async function main() {
   for (let index = 0; index < laterMovieSets.length; index += 1) {
     const offset = todayOffset + 2 + index;
     if (offset > 6) break;
-    const showTimes = ["18:00", "20:30", "22:30"];
+    const showTimes = CINEMA_CONFIG.screeningSlots;
     laterMovieSets[index].forEach((title, movieIndex) => {
       addRequestedScreening(title, storedCalendarDateKey(addDays(monday, offset)), showTimes[movieIndex]);
     });
   }
 
-  addRequestedScreening("Film terminé", recentDateKey, "18:00");
-  addRequestedScreening("Le Comte de Monte-Cristo", recentDateKey, "20:30");
-  addRequestedScreening("Dune : Deuxième Partie", recentDuneDateKey, "18:00");
-  addRequestedScreening("Dune : Deuxième Partie", nextMondayKey, "16:00");
-  addRequestedScreening("Film à venir la semaine prochaine", nextWeekOnlyKey, "20:30");
+  addRequestedScreening("Film terminé", recentDateKey, OPENING_SHOW_TIME);
+  addRequestedScreening("Le Comte de Monte-Cristo", recentDateKey, PRIME_SHOW_TIME);
+  addRequestedScreening("Dune : Deuxième Partie", recentDuneDateKey, OPENING_SHOW_TIME);
+  addRequestedScreening("Dune : Deuxième Partie", nextMondayKey, OPENING_SHOW_TIME);
+  addRequestedScreening("Film à venir la semaine prochaine", nextWeekOnlyKey, PRIME_SHOW_TIME);
 
   for (const item of requestedSchedule) {
     const screening = await ensureScreening(movies[item.title].id, item.dateKey, item.showTime);
@@ -345,15 +362,15 @@ async function main() {
     if (seats.some((seat) => !seat)) throw new Error(`Siège introuvable: ${keys.join(", ")}`);
     return seats.map((seat) => seat.id);
   };
-  const amountFor = (keys) => keys.reduce((sum, key) => sum + SEAT_PRICES[seatsByKey.get(key).category], 0);
+  const amountFor = (keys) => keys.reduce((sum, key) => sum + CINEMA_CONFIG.seatCategories[seatsByKey.get(key).category], 0);
 
   const fixture = {};
-  const currentScreening = screeningByKey.get(`Dune : Deuxième Partie|${todayKey}|18:00`);
-  const cancellableScreening = screeningByKey.get(`Interstellar|${tomorrowKey}|18:00`);
-  const activePendingScreening = screeningByKey.get(`Parasite|${tomorrowKey}|20:30`);
-  const expiredPendingScreening = screeningByKey.get(`Spider-Man : Across the Spider-Verse|${todayKey}|22:30`);
-  const cancelledScreening = screeningByKey.get(`Film terminé|${recentDateKey}|18:00`);
-  const soldOutScreening = screeningByKey.get(`Dune : Deuxième Partie|${nextMondayKey}|16:00`);
+  const currentScreening = screeningByKey.get(`Dune : Deuxième Partie|${todayKey}|${OPENING_SHOW_TIME}`);
+  const cancellableScreening = screeningByKey.get(`Interstellar|${tomorrowKey}|${OPENING_SHOW_TIME}`);
+  const activePendingScreening = screeningByKey.get(`Parasite|${tomorrowKey}|${PRIME_SHOW_TIME}`);
+  const expiredPendingScreening = screeningByKey.get(`Spider-Man : Across the Spider-Verse|${todayKey}|${LATE_SHOW_TIME}`);
+  const cancelledScreening = screeningByKey.get(`Film terminé|${recentDateKey}|${OPENING_SHOW_TIME}`);
+  const soldOutScreening = screeningByKey.get(`Dune : Deuxième Partie|${nextMondayKey}|${OPENING_SHOW_TIME}`);
 
   const confirmedSeats = ["A1", "D1", "H1"];
   fixture.confirmed = await ensureReservation({ userId: users.client1.id, screeningId: currentScreening.id, seatIds: seatIdsFor(confirmedSeats), status: "CONFIRMED", lockedUntil: null, totalAmount: amountFor(confirmedSeats) });
@@ -404,7 +421,7 @@ async function main() {
 async function validateSeed({ users, movies, fixture, seatRecords, todayKey, monday, nextMondayKey, emptyFutureKey, soldOutScreening }) {
   const failures = [];
   const expect = (condition, message) => { if (!condition) failures.push(message); };
-  expect(seatRecords.length === 120, `120 sièges attendus, obtenu ${seatRecords.length}`);
+  expect(seatRecords.length === CINEMA_CONFIG.capacity, `${CINEMA_CONFIG.capacity} sièges attendus, obtenu ${seatRecords.length}`);
   const categoryCounts = seatRecords.reduce((counts, seat) => { counts[seat.category] = (counts[seat.category] || 0) + 1; return counts; }, {});
   expect(categoryCounts.CLUB === 36, "36 sièges CLUB attendus");
   expect(categoryCounts.NORMAL === 48, "48 sièges NORMAL attendus");
@@ -422,7 +439,7 @@ async function validateSeed({ users, movies, fixture, seatRecords, todayKey, mon
     const key = `${storedCalendarDateKey(screening.date)}|${screening.showTime}`;
     expect(!timeKeys.has(key), `Chevauchement le ${key} dans l'auditorium unique`);
     timeKeys.add(key);
-    expect(/^([01]\d|2[0-3]):[0-5]\d$/.test(screening.showTime), `Heure invalide: ${screening.showTime}`);
+    expect(OFFICIAL_SHOW_TIMES.includes(screening.showTime), `Heure invalide: ${screening.showTime}`);
   }
   expect(allScreenings.some((screening) => storedCalendarDateKey(screening.date) === todayKey), "Aucune séance le jour courant");
   expect(allScreenings.some((screening) => storedCalendarDateKey(screening.date) > todayKey), "Aucune séance sur un jour futur");
@@ -457,7 +474,7 @@ async function validateSeed({ users, movies, fixture, seatRecords, todayKey, mon
   expect(fixture.cancelled.status === "CANCELLED", "Fixture annulée invalide");
 
   const soldOutSeats = await prisma.reservationSeat.count({ where: { reservationId: fixture.soldOut.id } });
-  expect(soldOutSeats === 120, `La réservation sold-out doit contenir 120 sièges (obtenu ${soldOutSeats})`);
+  expect(soldOutSeats === CINEMA_CONFIG.capacity, `La réservation sold-out doit contenir ${CINEMA_CONFIG.capacity} sièges (obtenu ${soldOutSeats})`);
   expect(fixture.soldOut.totalAmount === 7740, "Total sold-out attendu: 7740 DH");
   const tickets = await prisma.ticket.findMany({ select: { qrCode: true } });
   expect(new Set(tickets.map((ticket) => ticket.qrCode)).size === tickets.length, "Les valeurs QR ne sont pas toutes uniques");

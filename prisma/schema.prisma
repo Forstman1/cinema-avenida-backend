@@ -17,24 +17,24 @@ model User {
 }
 
 model Movie {
-  id          Int          @id @default(autoincrement())
-  title       String
-  synopsis    String
-  duration    Int
-  genre       String
-  poster      String?
-  screenings  Screening[]
+  id         Int         @id @default(autoincrement())
+  title      String
+  synopsis   String
+  duration   Int
+  genre      String
+  poster     String?
+  screenings Screening[]
 }
 
 model Screening {
-  id            Int           @id @default(autoincrement())
-  date          DateTime
-  showTime      String
-  movieId       Int
-  movie         Movie         @relation(fields: [movieId], references: [id])
-  reservations  Reservation[]
+  id           Int           @id @default(autoincrement())
+  date         DateTime
+  showTime     String
+  movieId      Int
+  movie        Movie         @relation(fields: [movieId], references: [id])
+  reservations Reservation[]
 
-  @@unique([movieId, date, showTime])
+  @@unique([date, showTime])
 }
 
 model Seat {
@@ -61,22 +61,22 @@ model Reservation {
 }
 
 model ReservationSeat {
-  id              Int           @id @default(autoincrement())
-  lockedUntil     DateTime?
-  reservationId   Int
-  reservation     Reservation   @relation(fields: [reservationId], references: [id])
-  seatId          Int
-  seat            Seat          @relation(fields: [seatId], references: [id])
+  id            Int         @id @default(autoincrement())
+  lockedUntil   DateTime?
+  reservationId Int
+  reservation   Reservation @relation(fields: [reservationId], references: [id])
+  seatId        Int
+  seat          Seat        @relation(fields: [seatId], references: [id])
 
   @@unique([reservationId, seatId])
 }
 
 model Ticket {
-  id            Int            @id @default(autoincrement())
-  qrCode        String         @unique
-  status        TicketStatus   @default(VALID)
-  reservationId Int            @unique
-  reservation   Reservation    @relation(fields: [reservationId], references: [id])
+  id            Int          @id @default(autoincrement())
+  qrCode        String       @unique
+  status        TicketStatus @default(VALID)
+  reservationId Int          @unique
+  reservation   Reservation  @relation(fields: [reservationId], references: [id])
 }
 
 enum Role {

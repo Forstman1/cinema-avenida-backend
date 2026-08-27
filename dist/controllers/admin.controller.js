@@ -5,31 +5,16 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getDashboard = getDashboard;
 const prisma_1 = __importDefault(require("../config/prisma"));
-function getStartOfWeek(date) {
-    const d = new Date(date);
-    const day = d.getDay();
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-    d.setDate(diff);
-    d.setHours(0, 0, 0, 0);
-    return d;
-}
-function getStartOfDay(date) {
-    const d = new Date(date);
-    d.setHours(0, 0, 0, 0);
-    return d;
-}
-function addDays(date, days) {
-    const d = new Date(date);
-    d.setDate(d.getDate() + days);
-    return d;
-}
+const cinema_time_1 = require("../utils/cinema-time");
+const cinema_1 = require("../config/cinema");
 // GET /api/admin/dashboard — indicateurs d'exploitation pour le tableau de bord admin
 async function getDashboard(req, res) {
     const now = new Date();
-    const todayStart = getStartOfDay(now);
-    const todayEnd = addDays(todayStart, 1);
-    const weekStart = getStartOfWeek(now);
-    const weekEnd = addDays(weekStart, 7);
+    const todayKey = (0, cinema_time_1.getCinemaDateTime)(now).date;
+    const todayStart = (0, cinema_time_1.dateKeyToDate)(todayKey);
+    const todayEnd = (0, cinema_time_1.addCalendarDays)(todayStart, 1);
+    const weekStart = (0, cinema_time_1.getStartOfCinemaWeek)(now);
+    const weekEnd = (0, cinema_time_1.addCalendarDays)(weekStart, 7);
     // Récupère toutes les réservations confirmées de la semaine avec leurs sièges et séances
     const confirmedReservations = await prisma_1.default.reservation.findMany({
         where: {
@@ -44,8 +29,7 @@ async function getDashboard(req, res) {
         },
     });
     // Réservations du jour
-    const todayReservations = confirmedReservations.filter((r) => new Date(r.screening.date) >= todayStart &&
-        new Date(r.screening.date) < todayEnd);
+    const todayReservations = confirmedReservations.filter((r) => (0, cinema_time_1.getStoredCalendarDate)(r.screening.date) === todayKey);
     const todayRevenue = todayReservations.reduce((sum, r) => sum + r.totalAmount, 0);
     const todayReservationsCount = todayReservations.length;
     const todaySeatsSold = todayReservations.reduce((sum, r) => sum + r.reservationSeats.length, 0);
@@ -55,7 +39,7 @@ async function getDashboard(req, res) {
             date: { gte: todayStart, lt: todayEnd },
         },
     });
-    const todayCapacity = todayScreenings.length * 120;
+    const todayCapacity = todayScreenings.length * cinema_1.CINEMA_CONFIG.capacity;
     const todayOccupancyRate = todayCapacity > 0 ? Math.round((todaySeatsSold / todayCapacity) * 100) : 0;
     // Semaine en cours
     const weekRevenue = confirmedReservations.reduce((sum, r) => sum + r.totalAmount, 0);
@@ -66,7 +50,7 @@ async function getDashboard(req, res) {
             date: { gte: weekStart, lt: weekEnd },
         },
     });
-    const weekCapacity = weekScreenings.length * 120;
+    const weekCapacity = weekScreenings.length * cinema_1.CINEMA_CONFIG.capacity;
     const weekOccupancyRate = weekCapacity > 0 ? Math.round((weekSeatsSold / weekCapacity) * 100) : 0;
     // Film le plus réservé de la semaine
     const movieBookingCounts = new Map();
@@ -90,7 +74,7 @@ async function getDashboard(req, res) {
             },
         },
     });
-    res.json({
+    const dashboard = {
         todayRevenue,
         todayReservationsCount,
         todayOccupancyRate,
@@ -103,5 +87,6 @@ async function getDashboard(req, res) {
             totalScreeningsThisWeek,
             pendingReservationsCount,
         },
-    });
+    };
+    res.json(dashboard);
 }

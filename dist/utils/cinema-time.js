@@ -1,5 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.OFFICIAL_SHOW_TIMES = void 0;
+exports.isOfficialShowTime = isOfficialShowTime;
 exports.getStoredCalendarDate = getStoredCalendarDate;
 exports.getCinemaDateTime = getCinemaDateTime;
 exports.isValidDateKey = isValidDateKey;
@@ -9,9 +11,11 @@ exports.getStartOfCinemaWeek = getStartOfCinemaWeek;
 exports.cinemaDateTimeToDate = cinemaDateTimeToDate;
 exports.getScreeningDateTime = getScreeningDateTime;
 exports.isScreeningInFuture = isScreeningInFuture;
-const CINEMA_TIMEZONE = process.env.CINEMA_TIMEZONE || "Africa/Casablanca";
+const cinema_1 = require("../config/cinema");
+// Backwards-compatible alias; the values come only from the shared config.
+exports.OFFICIAL_SHOW_TIMES = cinema_1.CINEMA_CONFIG.screeningSlots;
 const cinemaDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: CINEMA_TIMEZONE,
+    timeZone: cinema_1.CINEMA_CONFIG.timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -20,6 +24,9 @@ const cinemaDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
     second: "2-digit",
     hourCycle: "h23",
 });
+function isOfficialShowTime(showTime) {
+    return exports.OFFICIAL_SHOW_TIMES.some((slot) => slot === showTime);
+}
 function formatParts(date) {
     return Object.fromEntries(cinemaDateTimeFormatter
         .formatToParts(date)

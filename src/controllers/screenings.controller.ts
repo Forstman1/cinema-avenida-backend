@@ -1,25 +1,31 @@
 import { Request, Response } from "express";
 import prisma from "../config/prisma";
+import { sendApiError } from "../utils/api-response";
+import { toScreeningDTO, toSeatDTO } from "../utils/api-mappers";
+import { SeatStatus } from "../types/api";
+import {
+  parsePositiveId,
+  parseRequiredDateQuery,
+  parseScreeningCreateBody,
+} from "../validation/api";
 import {
   addCalendarDays,
   dateKeyToDate,
-  getStoredCalendarDate,
-  isValidDateKey,
 } from "../utils/cinema-time";
+import { CINEMA_CONFIG } from "../config/cinema";
+import { Prisma } from "@prisma/client";
 
 // GET /api/screenings?date=YYYY-MM-DD — liste les séances d'une journée (admin)
 export async function getScreeningsByDate(
   req: Request,
   res: Response
 ): Promise<void> {
-  const { date } = req.query;
-
-  if (!date || typeof date !== "string" || !isValidDateKey(date)) {
-    res
-      .status(400)
-      .json({ message: "Paramètre date requis au format YYYY-MM-DD" });
+  const parsedDate = parseRequiredDateQuery(req.query.date);
+  if (!parsedDate.ok) {
+    sendApiError(res, 400, parsedDate.error);
     return;
   }
+  const date = parsedDate.value;
 
   const start = dateKeyToDate(date);
   const end = addCalendarDays(start, 1);
@@ -39,12 +45,7 @@ export async function getScreeningsByDate(
     orderBy: { showTime: "asc" },
   });
 
-  res.json(
-    screenings.map((screening) => ({
-      ...screening,
-      date: getStoredCalendarDate(screening.date),
-    }))
-  );
+  res.json(screenings.map(toScreeningDTO));
 }
 
 // GET /api/screenings/:id/seats — liste les sièges avec leur statut pour une séance
@@ -52,18 +53,23 @@ export async function getSeatsByScreening(
   req: Request,
   res: Response
 ): Promise<void> {
-  const screeningId = Number(req.params.id);
+  const parsedId = parsePositiveId(req.params.id, "Séance");
+  if (!parsedId.ok) {
+    sendApiError(res, 400, parsedId.error);
+    return;
+  }
+  const screeningId = parsedId.value;
 
   // Vérifie que la séance existe
   const screening = await prisma.screening.findUnique({
     where: { id: screeningId },
   });
   if (!screening) {
-    res.status(404).json({ message: "Séance non trouvée" });
+    sendApiError(res, 404, { message: "Séance non trouvée", code: "SCREENING_NOT_FOUND" });
     return;
   }
 
-  // Récupère les 120 sièges, triés par rangée et numéro
+  // Récupère les sièges de la capacité configurée, triés par rangée et numéro
   const seats = await prisma.seat.findMany({
     orderBy: [{ row: "asc" }, { number: "asc" }],
   });
@@ -87,7 +93,7 @@ export async function getSeatsByScreening(
   });
 
   // Construit une map seatId -> statut
-  const seatStatus = new Map<number, string>();
+  const seatStatus = new Map<number, SeatStatus>();
   for (const rs of reservationSeats) {
     const isPending =
       rs.reservation.status === "EN_ATTENTE" &&
@@ -97,18 +103,11 @@ export async function getSeatsByScreening(
   }
 
   // Attache le statut à chaque siège (LIBRE par défaut)
-  const result = seats.map((seat) => ({
-    ...seat,
-    status: seatStatus.get(seat.id) || "LIBRE",
-  }));
+  const result = seats.map((seat) =>
+    toSeatDTO(seat, seatStatus.get(seat.id) || "LIBRE")
+  );
 
   res.json(result);
-}
-
-interface ScreeningBody {
-  movieId: number;
-  date: string;
-  showTime: string;
 }
 
 // POST /api/screenings — créer une séance (admin)
@@ -116,36 +115,18 @@ export async function createScreening(
   req: Request,
   res: Response
 ): Promise<void> {
-  const { movieId, date, showTime } = req.body as ScreeningBody;
-
-  if (!movieId || !date || !showTime) {
-    res
-      .status(400)
-      .json({ message: "Champs obligatoires : movieId, date, showTime" });
+  const parsed = parseScreeningCreateBody(req.body);
+  if (!parsed.ok) {
+    sendApiError(res, 400, parsed.error);
     return;
   }
-
-  const numericMovieId = Number(movieId);
-  if (!Number.isInteger(numericMovieId) || numericMovieId <= 0) {
-    res.status(400).json({ message: "movieId doit être un entier valide" });
-    return;
-  }
-
-  if (!isValidDateKey(date)) {
-    res.status(400).json({ message: "date doit être au format YYYY-MM-DD" });
-    return;
-  }
-
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(showTime)) {
-    res.status(400).json({ message: "showTime doit être au format HH:MM" });
-    return;
-  }
+  const { movieId: numericMovieId, date, showTime } = parsed.value;
 
   const movie = await prisma.movie.findUnique({
     where: { id: numericMovieId },
   });
   if (!movie) {
-    res.status(404).json({ message: "Film non trouvé" });
+    sendApiError(res, 404, { message: "Film non trouvé", code: "MOVIE_NOT_FOUND" });
     return;
   }
 
@@ -158,7 +139,6 @@ export async function createScreening(
       },
     });
 
-    const totalSeats = await prisma.seat.count();
     const occupiedSeats = await prisma.reservationSeat.count({
       where: {
         reservation: {
@@ -168,14 +148,24 @@ export async function createScreening(
       },
     });
 
-    res.status(201).json({
-      id: screening.id,
-      date: screening.date.toISOString().split("T")[0],
-      showTime: screening.showTime,
-      movieId: screening.movieId,
-      availableSeats: totalSeats - occupiedSeats,
-    });
-  } catch {
-    res.status(409).json({ message: "Conflit : cette séance existe déjà" });
+    res.status(201).json(
+      toScreeningDTO({
+        ...screening,
+        availableSeats: Math.max(0, CINEMA_CONFIG.capacity - occupiedSeats),
+      })
+    );
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      sendApiError(res, 409, {
+        message: "Conflit : ce créneau est déjà occupé pour cette date",
+        code: "SCREENING_SLOT_CONFLICT",
+      });
+      return;
+    }
+
+    throw error;
   }
 }

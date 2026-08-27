@@ -1,7 +1,10 @@
-const CINEMA_TIMEZONE = process.env.CINEMA_TIMEZONE || "Africa/Casablanca";
+import { CINEMA_CONFIG } from "../config/cinema";
+
+// Backwards-compatible alias; the values come only from the shared config.
+export const OFFICIAL_SHOW_TIMES = CINEMA_CONFIG.screeningSlots;
 
 const cinemaDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
-  timeZone: CINEMA_TIMEZONE,
+  timeZone: CINEMA_CONFIG.timezone,
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
@@ -14,6 +17,10 @@ const cinemaDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
 export interface CinemaDateTimeParts {
   date: string;
   time: string;
+}
+
+export function isOfficialShowTime(showTime: string): boolean {
+  return OFFICIAL_SHOW_TIMES.some((slot) => slot === showTime);
 }
 
 function formatParts(date: Date): Record<string, string> {

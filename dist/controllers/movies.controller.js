@@ -9,7 +9,11 @@ exports.getScreeningsByMovie = getScreeningsByMovie;
 exports.createMovie = createMovie;
 exports.updateMovie = updateMovie;
 const prisma_1 = __importDefault(require("../config/prisma"));
+const api_response_1 = require("../utils/api-response");
+const api_mappers_1 = require("../utils/api-mappers");
+const api_1 = require("../validation/api");
 const cinema_time_1 = require("../utils/cinema-time");
+const cinema_1 = require("../config/cinema");
 // GET /api/movies — liste tous les films
 // Query: ?current=true → retourne le programme de la semaine en cours (films ayant
 // au moins une séance à partir du lundi 00:00) avec leurs séances incluses.
@@ -21,7 +25,12 @@ const cinema_time_1 = require("../utils/cinema-time");
 // anciennes données restent en base pour l'historique et les stats, l'application
 // reste propre.
 async function getAllMovies(req, res) {
-    const current = req.query.current === "true";
+    const parsedCurrent = (0, api_1.parseBooleanQuery)(req.query.current, "current");
+    if (!parsedCurrent.ok) {
+        (0, api_response_1.sendApiError)(res, 400, parsedCurrent.error);
+        return;
+    }
+    const current = parsedCurrent.value === true;
     if (current) {
         const now = new Date();
         const monday = (0, cinema_time_1.getStartOfCinemaWeek)(now);
@@ -43,6 +52,7 @@ async function getAllMovies(req, res) {
                         id: true,
                         date: true,
                         showTime: true,
+                        movieId: true,
                     },
                     orderBy: [{ date: "asc" }, { showTime: "asc" }],
                 },
@@ -52,13 +62,10 @@ async function getAllMovies(req, res) {
         const checkedAt = new Date();
         const currentMovies = movies
             .map((movie) => ({
-            ...movie,
+            ...(0, api_mappers_1.toMovieDTO)(movie),
             screenings: movie.screenings
                 .filter((screening) => (0, cinema_time_1.isScreeningInFuture)(screening, checkedAt))
-                .map((screening) => ({
-                ...screening,
-                date: (0, cinema_time_1.getStoredCalendarDate)(screening.date),
-            })),
+                .map(api_mappers_1.toScreeningDTO),
         }))
             .filter((movie) => movie.screenings.length > 0);
         res.json(currentMovies);
@@ -68,27 +75,37 @@ async function getAllMovies(req, res) {
     const movies = await prisma_1.default.movie.findMany({
         orderBy: { title: "asc" },
     });
-    res.json(movies);
+    res.json(movies.map(api_mappers_1.toMovieDTO));
 }
 // GET /api/movies/:id — détails d'un film
 async function getMovieById(req, res) {
-    const id = Number(req.params.id);
-    const movie = await prisma_1.default.movie.findUnique({ where: { id } });
-    if (!movie) {
-        res.status(404).json({ message: "Film non trouvé" });
+    const parsedId = (0, api_1.parsePositiveId)(req.params.id, "Film");
+    if (!parsedId.ok) {
+        (0, api_response_1.sendApiError)(res, 400, parsedId.error);
         return;
     }
-    res.json(movie);
+    const id = parsedId.value;
+    const movie = await prisma_1.default.movie.findUnique({ where: { id } });
+    if (!movie) {
+        (0, api_response_1.sendApiError)(res, 404, { message: "Film non trouvé", code: "MOVIE_NOT_FOUND" });
+        return;
+    }
+    res.json((0, api_mappers_1.toMovieDTO)(movie));
 }
 // GET /api/movies/:id/screenings — séances d'un film
 async function getScreeningsByMovie(req, res) {
-    const movieId = Number(req.params.id);
-    const requestedDate = req.query.date;
-    if (requestedDate !== undefined &&
-        (typeof requestedDate !== "string" || !(0, cinema_time_1.isValidDateKey)(requestedDate))) {
-        res.status(400).json({ message: "date doit être au format YYYY-MM-DD" });
+    const parsedMovieId = (0, api_1.parsePositiveId)(req.params.id, "Film");
+    if (!parsedMovieId.ok) {
+        (0, api_response_1.sendApiError)(res, 400, parsedMovieId.error);
         return;
     }
+    const parsedDate = (0, api_1.parseOptionalDateQuery)(req.query.date);
+    if (!parsedDate.ok) {
+        (0, api_response_1.sendApiError)(res, 400, parsedDate.error);
+        return;
+    }
+    const movieId = parsedMovieId.value;
+    const requestedDate = parsedDate.value;
     const now = new Date();
     const checkedAt = new Date();
     const screenings = await prisma_1.default.screening.findMany({
@@ -130,52 +147,61 @@ async function getScreeningsByMovie(req, res) {
                 ],
             },
         });
-        return {
+        return (0, api_mappers_1.toScreeningDTO)({
             ...screening,
-            date: dateKey,
-            availableSeats: Math.max(0, 120 - taken),
-        };
+            availableSeats: Math.max(0, cinema_1.CINEMA_CONFIG.capacity - taken),
+        });
     }));
     res.json(screeningsWithAvailability);
 }
 // POST /api/movies — créer un film (admin)
 async function createMovie(req, res) {
-    const { title, synopsis, duration, genre, poster } = req.body;
-    if (!title || !synopsis || !duration || !genre) {
-        res
-            .status(400)
-            .json({ message: "Champs obligatoires : title, synopsis, duration, genre" });
+    const parsed = (0, api_1.parseMovieCreateBody)(req.body);
+    if (!parsed.ok) {
+        (0, api_response_1.sendApiError)(res, 400, parsed.error);
         return;
     }
+    const { title, synopsis, duration, genre, poster } = parsed.value;
     const movie = await prisma_1.default.movie.create({
         data: {
             title,
             synopsis,
-            duration: Number(duration),
+            duration,
             genre,
             poster,
         },
     });
-    res.status(201).json(movie);
+    res.status(201).json((0, api_mappers_1.toMovieDTO)(movie));
 }
 // PUT /api/movies/:id — modifier un film (admin)
 async function updateMovie(req, res) {
-    const id = Number(req.params.id);
-    const { title, synopsis, duration, genre, poster } = req.body;
-    const existing = await prisma_1.default.movie.findUnique({ where: { id } });
-    if (!existing) {
-        res.status(404).json({ message: "Film non trouvé" });
+    const parsedId = (0, api_1.parsePositiveId)(req.params.id, "Film");
+    if (!parsedId.ok) {
+        (0, api_response_1.sendApiError)(res, 400, parsedId.error);
         return;
     }
+    const parsed = (0, api_1.parseMovieUpdateBody)(req.body);
+    if (!parsed.ok) {
+        (0, api_response_1.sendApiError)(res, 400, parsed.error);
+        return;
+    }
+    const id = parsedId.value;
+    const { title, synopsis, duration, genre, poster } = parsed.value;
+    const existing = await prisma_1.default.movie.findUnique({ where: { id } });
+    if (!existing) {
+        (0, api_response_1.sendApiError)(res, 404, { message: "Film non trouvé", code: "MOVIE_NOT_FOUND" });
+        return;
+    }
+    const data = {
+        title,
+        synopsis,
+        duration,
+        genre,
+        poster,
+    };
     const movie = await prisma_1.default.movie.update({
         where: { id },
-        data: {
-            title,
-            synopsis,
-            duration: duration ? Number(duration) : undefined,
-            genre,
-            poster,
-        },
+        data,
     });
-    res.json(movie);
+    res.json((0, api_mappers_1.toMovieDTO)(movie));
 }

@@ -1,0 +1,10 @@
+{
+  "capacity": 120,
+  "timezone": "Africa/Casablanca",
+  "screeningSlots": ["18:00", "20:30", "22:30"],
+  "seatCategories": {
+    "CLUB": 45,
+    "NORMAL": 60,
+    "VIP": 90
+  }
+}
