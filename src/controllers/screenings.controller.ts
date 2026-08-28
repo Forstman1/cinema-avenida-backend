@@ -151,11 +151,20 @@ export async function createScreening(
     return;
   }
 
+  const screeningDate = dateKeyToDate(date);
+  if (!isScreeningInFuture({ date: screeningDate, showTime })) {
+    sendApiError(res, 400, {
+      message: "Impossible de programmer une séance dans le passé",
+      code: "SCREENING_IN_PAST",
+    });
+    return;
+  }
+
   try {
     const screening = await prisma.screening.create({
       data: {
         movieId: numericMovieId,
-        date: dateKeyToDate(date),
+        date: screeningDate,
         showTime,
       },
     });

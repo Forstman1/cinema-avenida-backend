@@ -110,11 +110,19 @@ async function createScreening(req, res) {
         (0, api_response_1.sendApiError)(res, 404, { message: "Film non trouvé", code: "MOVIE_NOT_FOUND" });
         return;
     }
+    const screeningDate = (0, cinema_time_1.dateKeyToDate)(date);
+    if (!(0, cinema_time_1.isScreeningInFuture)({ date: screeningDate, showTime })) {
+        (0, api_response_1.sendApiError)(res, 400, {
+            message: "Impossible de programmer une séance dans le passé",
+            code: "SCREENING_IN_PAST",
+        });
+        return;
+    }
     try {
         const screening = await prisma_1.default.screening.create({
             data: {
                 movieId: numericMovieId,
-                date: (0, cinema_time_1.dateKeyToDate)(date),
+                date: screeningDate,
                 showTime,
             },
         });
