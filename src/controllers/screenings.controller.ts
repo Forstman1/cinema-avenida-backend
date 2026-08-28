@@ -2,18 +2,39 @@ import { Request, Response } from "express";
 import prisma from "../config/prisma";
 import { sendApiError } from "../utils/api-response";
 import { toScreeningDTO, toSeatDTO } from "../utils/api-mappers";
-import { SeatStatus } from "../types/api";
+import type { ScreeningRecord } from "../utils/api-mappers";
+import type { SeatStatus, SuccessMessageDTO } from "../types/api";
 import {
   parsePositiveId,
   parseRequiredDateQuery,
   parseScreeningCreateBody,
+  parseScreeningUpdateBody,
 } from "../validation/api";
 import {
   addCalendarDays,
   dateKeyToDate,
+  isScreeningInFuture,
 } from "../utils/cinema-time";
 import { CINEMA_CONFIG } from "../config/cinema";
 import { Prisma } from "@prisma/client";
+
+type ScreeningUpdateResult =
+  | { kind: "screening_not_found" }
+  | { kind: "movie_not_found" }
+  | { kind: "screening_in_past" }
+  | { kind: "has_reservations" }
+  | { kind: "updated"; screening: ScreeningRecord };
+
+type ScreeningDeleteResult =
+  | { kind: "screening_not_found" }
+  | { kind: "has_reservations" }
+  | { kind: "deleted" };
+
+const screeningMutationOptions = {
+  isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+  maxWait: 5_000,
+  timeout: 10_000,
+} as const;
 
 // GET /api/screenings?date=YYYY-MM-DD — liste les séances d'une journée (admin)
 export async function getScreeningsByDate(
@@ -166,6 +187,199 @@ export async function createScreening(
       return;
     }
 
+    throw error;
+  }
+}
+
+// PUT /api/screenings/:id — modifier une séance (admin)
+export async function updateScreening(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const parsedId = parsePositiveId(req.params.id, "Séance");
+  if (!parsedId.ok) {
+    sendApiError(res, 404, {
+      message: "Séance non trouvée",
+      code: "SCREENING_NOT_FOUND",
+    });
+    return;
+  }
+
+  const parsed = parseScreeningUpdateBody(req.body);
+  if (!parsed.ok) {
+    sendApiError(res, 400, parsed.error);
+    return;
+  }
+
+  const { movieId, date, showTime } = parsed.value;
+  const dateValue = dateKeyToDate(date);
+
+  try {
+    const result = await prisma.$transaction(
+      async (tx): Promise<ScreeningUpdateResult> => {
+        const screening = await tx.screening.findUnique({
+          where: { id: parsedId.value },
+        });
+        if (!screening) return { kind: "screening_not_found" };
+
+        const movie = await tx.movie.findUnique({ where: { id: movieId } });
+        if (!movie) return { kind: "movie_not_found" };
+
+        if (!isScreeningInFuture({ date: dateValue, showTime })) {
+          return { kind: "screening_in_past" };
+        }
+
+        const reservationCount = await tx.reservation.count({
+          where: { screeningId: parsedId.value },
+        });
+        if (reservationCount > 0) return { kind: "has_reservations" };
+
+        const updated = await tx.screening.update({
+          where: { id: parsedId.value },
+          data: {
+            movieId,
+            date: dateValue,
+            showTime,
+          },
+          include: {
+            movie: {
+              select: { id: true, title: true },
+            },
+          },
+        });
+
+        return { kind: "updated", screening: updated };
+      },
+      screeningMutationOptions
+    );
+
+    if (result.kind === "screening_not_found") {
+      sendApiError(res, 404, {
+        message: "Séance non trouvée",
+        code: "SCREENING_NOT_FOUND",
+      });
+      return;
+    }
+    if (result.kind === "movie_not_found") {
+      sendApiError(res, 404, {
+        message: "Film non trouvé",
+        code: "MOVIE_NOT_FOUND",
+      });
+      return;
+    }
+    if (result.kind === "screening_in_past") {
+      sendApiError(res, 400, {
+        message: "Impossible de programmer une séance dans le passé",
+        code: "SCREENING_IN_PAST",
+      });
+      return;
+    }
+    if (result.kind === "has_reservations") {
+      sendApiError(res, 409, {
+        message: "Cette séance possède déjà des réservations et ne peut pas être modifiée",
+        code: "SCREENING_HAS_RESERVATIONS",
+      });
+      return;
+    }
+
+    res.json(toScreeningDTO(result.screening));
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      sendApiError(res, 409, {
+        message: "Conflit : ce créneau est déjà occupé pour cette date",
+        code: "SCREENING_SLOT_CONFLICT",
+      });
+      return;
+    }
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2034"
+    ) {
+      sendApiError(res, 409, {
+        message: "Conflit lors de la modification de la séance, veuillez réessayer",
+        code: "SCREENING_CONFLICT",
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+// DELETE /api/screenings/:id — supprimer une séance sans historique (admin)
+export async function deleteScreening(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const parsedId = parsePositiveId(req.params.id, "Séance");
+  if (!parsedId.ok) {
+    sendApiError(res, 404, {
+      message: "Séance non trouvée",
+      code: "SCREENING_NOT_FOUND",
+    });
+    return;
+  }
+
+  try {
+    const result = await prisma.$transaction(
+      async (tx): Promise<ScreeningDeleteResult> => {
+        const screening = await tx.screening.findUnique({
+          where: { id: parsedId.value },
+          select: { id: true },
+        });
+        if (!screening) return { kind: "screening_not_found" };
+
+        const reservationCount = await tx.reservation.count({
+          where: { screeningId: parsedId.value },
+        });
+        if (reservationCount > 0) return { kind: "has_reservations" };
+
+        await tx.screening.delete({ where: { id: parsedId.value } });
+        return { kind: "deleted" };
+      },
+      screeningMutationOptions
+    );
+
+    if (result.kind === "screening_not_found") {
+      sendApiError(res, 404, {
+        message: "Séance non trouvée",
+        code: "SCREENING_NOT_FOUND",
+      });
+      return;
+    }
+    if (result.kind === "has_reservations") {
+      sendApiError(res, 409, {
+        message: "Cette séance possède déjà des réservations et ne peut pas être supprimée",
+        code: "SCREENING_HAS_RESERVATIONS",
+      });
+      return;
+    }
+
+    const response: SuccessMessageDTO = { message: "Séance supprimée" };
+    res.json(response);
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      sendApiError(res, 404, {
+        message: "Séance non trouvée",
+        code: "SCREENING_NOT_FOUND",
+      });
+      return;
+    }
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2034"
+    ) {
+      sendApiError(res, 409, {
+        message: "Conflit lors de la suppression de la séance, veuillez réessayer",
+        code: "SCREENING_CONFLICT",
+      });
+      return;
+    }
     throw error;
   }
 }

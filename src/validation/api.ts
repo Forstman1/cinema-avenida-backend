@@ -39,6 +39,8 @@ export interface ScreeningCreateInput {
   showTime: string;
 }
 
+export type ScreeningUpdateInput = ScreeningCreateInput;
+
 export interface LockSeatsInput {
   screeningId: number;
   seatIds: number[];
@@ -191,7 +193,7 @@ export function parseMovieUpdateBody(
   return success(result);
 }
 
-export function parseScreeningCreateBody(
+function parseScreeningBody(
   input: unknown
 ): ValidationResult<ScreeningCreateInput> {
   const body = asRecord(input);
@@ -218,6 +220,18 @@ export function parseScreeningCreateBody(
     date: body.date,
     showTime: body.showTime,
   });
+}
+
+export function parseScreeningCreateBody(
+  input: unknown
+): ValidationResult<ScreeningCreateInput> {
+  return parseScreeningBody(input);
+}
+
+export function parseScreeningUpdateBody(
+  input: unknown
+): ValidationResult<ScreeningUpdateInput> {
+  return parseScreeningBody(input);
 }
 
 export function parseLockSeatsBody(

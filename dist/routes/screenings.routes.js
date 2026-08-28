@@ -10,4 +10,6 @@ router.get("/", auth_1.verifyToken, auth_1.isAdmin, screenings_controller_1.getS
 router.get("/:id/seats", screenings_controller_1.getSeatsByScreening);
 // Admin route
 router.post("/", auth_1.verifyToken, auth_1.isAdmin, screenings_controller_1.createScreening);
+router.put("/:id", auth_1.verifyToken, auth_1.isAdmin, screenings_controller_1.updateScreening);
+router.delete("/:id", auth_1.verifyToken, auth_1.isAdmin, screenings_controller_1.deleteScreening);
 exports.default = router;

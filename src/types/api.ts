@@ -130,6 +130,10 @@ export interface ApiErrorDTO {
   code?: string;
 }
 
+export interface SuccessMessageDTO {
+  message: string;
+}
+
 export interface PendingReservationErrorDTO extends ApiErrorDTO {
   pendingReservationId: number;
 }

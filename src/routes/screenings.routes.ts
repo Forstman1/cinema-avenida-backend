@@ -4,6 +4,8 @@ import {
   getScreeningsByDate,
   getSeatsByScreening,
   createScreening,
+  updateScreening,
+  deleteScreening,
 } from "../controllers/screenings.controller";
 
 const router = Router();
@@ -16,5 +18,7 @@ router.get("/:id/seats", getSeatsByScreening);
 
 // Admin route
 router.post("/", verifyToken, isAdmin, createScreening);
+router.put("/:id", verifyToken, isAdmin, updateScreening);
+router.delete("/:id", verifyToken, isAdmin, deleteScreening);
 
 export default router;

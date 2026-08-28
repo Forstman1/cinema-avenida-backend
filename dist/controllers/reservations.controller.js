@@ -61,6 +61,38 @@ async function lockAdvisoryKey(tx, namespace, key) {
     )
   `;
 }
+function hasActiveSeatLock(reservationSeats, now) {
+    return reservationSeats.some((reservationSeat) => reservationSeat.lockedUntil !== null && reservationSeat.lockedUntil > now);
+}
+async function cancelPendingReservationIfExpired(tx, reservationId, reservationSeats, now) {
+    if (hasActiveSeatLock(reservationSeats, now)) {
+        return false;
+    }
+    const updated = await tx.reservation.updateMany({
+        where: { id: reservationId, status: "EN_ATTENTE" },
+        data: { status: "CANCELLED" },
+    });
+    if (updated.count === 0) {
+        return false;
+    }
+    await tx.reservationSeat.updateMany({
+        where: { reservationId },
+        data: { lockedUntil: null },
+    });
+    return true;
+}
+async function expireStalePendingReservations(tx, userId, now) {
+    const pendingReservations = await tx.reservation.findMany({
+        where: { userId, status: "EN_ATTENTE" },
+        select: {
+            id: true,
+            reservationSeats: { select: { lockedUntil: true } },
+        },
+    });
+    for (const reservation of pendingReservations) {
+        await cancelPendingReservationIfExpired(tx, reservation.id, reservation.reservationSeats, now);
+    }
+}
 // POST /api/reservations/lock
 async function lockSeats(req, res) {
     const user = (0, auth_1.getAuthenticatedUser)(req);
@@ -87,6 +119,7 @@ async function lockSeats(req, res) {
                 await lockAdvisoryKey(tx, numericScreeningId, seatId);
             }
             const now = new Date();
+            await expireStalePendingReservations(tx, userId, now);
             // 1. Vérifie que la séance existe
             const screening = await tx.screening.findUnique({
                 where: { id: numericScreeningId },
@@ -265,15 +298,18 @@ async function payReservation(req, res) {
                 return { error: "screening_invalid_time" };
             }
             const now = new Date();
+            // Every required seat lock must still be active; checking only one
+            // lock could confirm a partially expired reservation. A reservation is
+            // cancelled here only when none of its locks is still active.
+            const locksValid = reservation.reservationSeats.length > 0 &&
+                reservation.reservationSeats.every((rs) => rs.lockedUntil !== null && rs.lockedUntil > now);
+            if (!locksValid) {
+                await cancelPendingReservationIfExpired(tx, reservation.id, reservation.reservationSeats, now);
+                return { error: "lock_expired" };
+            }
             if ((0, cinema_time_1.getScreeningDateTime)(reservation.screening.date, reservation.screening.showTime).getTime() <= now.getTime()) {
                 return { error: "screening_started" };
             }
-            // Every required seat lock must still be active; checking only one
-            // lock could confirm a partially expired reservation.
-            const locksValid = reservation.reservationSeats.length > 0 &&
-                reservation.reservationSeats.every((rs) => rs.lockedUntil !== null && rs.lockedUntil > now);
-            if (!locksValid)
-                return { error: "lock_expired" };
             await tx.reservation.update({
                 where: { id: reservationId },
                 data: { status: "CONFIRMED" },
@@ -365,14 +401,19 @@ async function getMyReservations(req, res) {
         return;
     }
     const userId = user.id;
-    const reservations = await prisma_1.default.reservation.findMany({
-        where: { userId },
-        include: {
-            screening: { include: { movie: true } },
-            reservationSeats: { include: { seat: true } },
-            ticket: true,
-        },
-        orderBy: { reservedAt: "desc" },
+    const reservations = await runSerializableTransaction(async (tx) => {
+        await lockAdvisoryKey(tx, 0, userId);
+        const now = new Date();
+        await expireStalePendingReservations(tx, userId, now);
+        return tx.reservation.findMany({
+            where: { userId },
+            include: {
+                screening: { include: { movie: true } },
+                reservationSeats: { include: { seat: true } },
+                ticket: true,
+            },
+            orderBy: { reservedAt: "desc" },
+        });
     });
     res.json(reservations.map((reservation) => (0, api_mappers_1.toReservationDTO)(reservation)));
 }

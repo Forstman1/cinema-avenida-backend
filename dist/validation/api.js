@@ -5,6 +5,7 @@ exports.parseLoginBody = parseLoginBody;
 exports.parseMovieCreateBody = parseMovieCreateBody;
 exports.parseMovieUpdateBody = parseMovieUpdateBody;
 exports.parseScreeningCreateBody = parseScreeningCreateBody;
+exports.parseScreeningUpdateBody = parseScreeningUpdateBody;
 exports.parseLockSeatsBody = parseLockSeatsBody;
 exports.parsePositiveId = parsePositiveId;
 exports.parseRequiredDateQuery = parseRequiredDateQuery;
@@ -148,7 +149,7 @@ function parseMovieUpdateBody(input) {
     }
     return success(result);
 }
-function parseScreeningCreateBody(input) {
+function parseScreeningBody(input) {
     const body = asRecord(input);
     if (!body)
         return failure("Le corps de la requête est invalide");
@@ -166,6 +167,12 @@ function parseScreeningCreateBody(input) {
         date: body.date,
         showTime: body.showTime,
     });
+}
+function parseScreeningCreateBody(input) {
+    return parseScreeningBody(input);
+}
+function parseScreeningUpdateBody(input) {
+    return parseScreeningBody(input);
 }
 function parseLockSeatsBody(input) {
     const body = asRecord(input);
