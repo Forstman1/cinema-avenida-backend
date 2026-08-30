@@ -32,6 +32,7 @@ export interface UserRecord {
 export interface MovieSummaryRecord {
   id: number;
   title: string;
+  poster: string | null;
 }
 
 export interface ScreeningRecord {
@@ -143,7 +144,7 @@ export function toUserSummaryDTO(
 }
 
 export function toMovieSummaryDTO(record: MovieSummaryRecord): MovieSummaryDTO {
-  return { id: record.id, title: record.title };
+  return { id: record.id, title: record.title, poster: record.poster };
 }
 
 export function toScreeningDTO(record: ScreeningRecord): ScreeningDTO {

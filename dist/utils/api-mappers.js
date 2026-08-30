@@ -53,7 +53,7 @@ function toUserSummaryDTO(record) {
     return { id: record.id, name: record.name, email: record.email };
 }
 function toMovieSummaryDTO(record) {
-    return { id: record.id, title: record.title };
+    return { id: record.id, title: record.title, poster: record.poster };
 }
 function toScreeningDTO(record) {
     const dto = {

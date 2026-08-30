@@ -18,6 +18,15 @@ const cinema_time_1 = require("../utils/cinema-time");
 const cinema_1 = require("../config/cinema");
 const transaction_locks_1 = require("../utils/transaction-locks");
 const MAX_SERIALIZATION_RETRIES = 3;
+const reservationInclude = {
+    reservationSeats: { include: { seat: true } },
+    screening: {
+        include: {
+            movie: { select: { id: true, title: true, poster: true } },
+        },
+    },
+    ticket: true,
+};
 function isSerializationConflict(error) {
     return (error instanceof client_1.Prisma.PrismaClientKnownRequestError &&
         error.code === "P2034");
@@ -195,11 +204,7 @@ async function lockSeats(req, res) {
                         })),
                     },
                 },
-                include: {
-                    reservationSeats: { include: { seat: true } },
-                    screening: { include: { movie: true } },
-                    ticket: true,
-                },
+                include: reservationInclude,
             });
             return { reservation, totalAmount };
         });
@@ -270,11 +275,7 @@ async function payReservation(req, res) {
             await (0, transaction_locks_1.lockAdvisoryKey)(tx, -1, reservationId);
             const reservation = await tx.reservation.findUnique({
                 where: { id: reservationId },
-                include: {
-                    reservationSeats: { include: { seat: true } },
-                    screening: { include: { movie: true } },
-                    ticket: true,
-                },
+                include: reservationInclude,
             });
             if (!reservation)
                 return { error: "not_found" };
@@ -319,11 +320,7 @@ async function payReservation(req, res) {
             });
             const completedReservation = await tx.reservation.findUnique({
                 where: { id: reservationId },
-                include: {
-                    reservationSeats: { include: { seat: true } },
-                    screening: { include: { movie: true } },
-                    ticket: true,
-                },
+                include: reservationInclude,
             });
             if (!completedReservation)
                 return { error: "not_found" };
@@ -336,11 +333,7 @@ async function payReservation(req, res) {
             // does not take the advisory lock. Never issue a second ticket.
             const existing = await prisma_1.default.reservation.findUnique({
                 where: { id: reservationId },
-                include: {
-                    reservationSeats: { include: { seat: true } },
-                    screening: { include: { movie: true } },
-                    ticket: true,
-                },
+                include: reservationInclude,
             });
             if (existing?.userId === userId && existing.status === "CONFIRMED" && existing.ticket) {
                 res.json((0, api_mappers_1.toReservationDTO)(existing));
@@ -399,11 +392,7 @@ async function getMyReservations(req, res) {
         await expireStalePendingReservations(tx, userId, now);
         return tx.reservation.findMany({
             where: { userId },
-            include: {
-                screening: { include: { movie: true } },
-                reservationSeats: { include: { seat: true } },
-                ticket: true,
-            },
+            include: reservationInclude,
             orderBy: { reservedAt: "desc" },
         });
     });

@@ -40,6 +40,7 @@ export type UserSummaryDTO = Pick<UserDTO, "id" | "name" | "email">;
 export interface MovieSummaryDTO {
   id: number;
   title: string;
+  poster: string | null;
 }
 
 export interface ScreeningDTO {

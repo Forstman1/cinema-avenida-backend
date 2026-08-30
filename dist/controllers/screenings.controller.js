@@ -40,7 +40,7 @@ async function getScreeningsByDate(req, res) {
         },
         include: {
             movie: {
-                select: { id: true, title: true },
+                select: { id: true, title: true, poster: true },
             },
         },
         orderBy: { showTime: "asc" },
@@ -201,7 +201,7 @@ async function updateScreening(req, res) {
                 },
                 include: {
                     movie: {
-                        select: { id: true, title: true },
+                        select: { id: true, title: true, poster: true },
                     },
                 },
             });

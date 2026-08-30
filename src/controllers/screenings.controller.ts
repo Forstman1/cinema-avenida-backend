@@ -63,7 +63,7 @@ export async function getScreeningsByDate(
     },
     include: {
       movie: {
-        select: { id: true, title: true },
+        select: { id: true, title: true, poster: true },
       },
     },
     orderBy: { showTime: "asc" },
@@ -262,7 +262,7 @@ export async function updateScreening(
           },
           include: {
             movie: {
-              select: { id: true, title: true },
+              select: { id: true, title: true, poster: true },
             },
           },
         });

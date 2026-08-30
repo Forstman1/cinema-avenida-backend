@@ -18,6 +18,16 @@ import { lockAdvisoryKey, lockScreening } from "../utils/transaction-locks";
 
 const MAX_SERIALIZATION_RETRIES = 3;
 
+const reservationInclude = {
+  reservationSeats: { include: { seat: true } },
+  screening: {
+    include: {
+      movie: { select: { id: true, title: true, poster: true } },
+    },
+  },
+  ticket: true,
+} as const;
+
 function isSerializationConflict(error: unknown): boolean {
   return (
     error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -255,11 +265,7 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
           })),
         },
       },
-      include: {
-        reservationSeats: { include: { seat: true } },
-        screening: { include: { movie: true } },
-        ticket: true,
-      },
+      include: reservationInclude,
     });
 
     return { reservation, totalAmount };
@@ -331,11 +337,7 @@ export async function payReservation(req: Request, res: Response): Promise<void>
 
       const reservation = await tx.reservation.findUnique({
         where: { id: reservationId },
-        include: {
-          reservationSeats: { include: { seat: true } },
-          screening: { include: { movie: true } },
-          ticket: true,
-        },
+        include: reservationInclude,
       });
 
       if (!reservation) return { error: "not_found" };
@@ -400,11 +402,7 @@ export async function payReservation(req: Request, res: Response): Promise<void>
 
       const completedReservation = await tx.reservation.findUnique({
         where: { id: reservationId },
-        include: {
-          reservationSeats: { include: { seat: true } },
-          screening: { include: { movie: true } },
-          ticket: true,
-        },
+        include: reservationInclude,
       });
 
       if (!completedReservation) return { error: "not_found" };
@@ -416,11 +414,7 @@ export async function payReservation(req: Request, res: Response): Promise<void>
       // does not take the advisory lock. Never issue a second ticket.
       const existing = await prisma.reservation.findUnique({
         where: { id: reservationId },
-        include: {
-          reservationSeats: { include: { seat: true } },
-          screening: { include: { movie: true } },
-          ticket: true,
-        },
+        include: reservationInclude,
       });
       if (existing?.userId === userId && existing.status === "CONFIRMED" && existing.ticket) {
         res.json(toReservationDTO(existing));
@@ -483,11 +477,7 @@ export async function getMyReservations(
 
     return tx.reservation.findMany({
       where: { userId },
-      include: {
-        screening: { include: { movie: true } },
-        reservationSeats: { include: { seat: true } },
-        ticket: true,
-      },
+      include: reservationInclude,
       orderBy: { reservedAt: "desc" },
     });
   });
