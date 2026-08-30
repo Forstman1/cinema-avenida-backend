@@ -16,6 +16,7 @@ const api_mappers_1 = require("../utils/api-mappers");
 const api_1 = require("../validation/api");
 const cinema_time_1 = require("../utils/cinema-time");
 const cinema_1 = require("../config/cinema");
+const transaction_locks_1 = require("../utils/transaction-locks");
 const MAX_SERIALIZATION_RETRIES = 3;
 function isSerializationConflict(error) {
     return (error instanceof client_1.Prisma.PrismaClientKnownRequestError &&
@@ -47,19 +48,6 @@ async function runSerializableTransaction(callback) {
         }
     }
     throw lastError;
-}
-/**
- * Transaction-scoped PostgreSQL advisory locks serialize access to a
- * screening/seat pair without preventing that same seat on another screening.
- * Namespace 0 is reserved for the per-user pending-reservation lock.
- */
-async function lockAdvisoryKey(tx, namespace, key) {
-    await tx.$executeRaw `
-    SELECT pg_advisory_xact_lock(
-      CAST(${namespace} AS integer),
-      CAST(${key} AS integer)
-    )
-  `;
 }
 function hasActiveSeatLock(reservationSeats, now) {
     return reservationSeats.some((reservationSeat) => reservationSeat.lockedUntil !== null && reservationSeat.lockedUntil > now);
@@ -112,11 +100,15 @@ async function lockSeats(req, res) {
         result = await runSerializableTransaction(async (tx) => {
             // Serialize all lock attempts by this user so two requests cannot both
             // create an active pending reservation for the same account.
-            await lockAdvisoryKey(tx, 0, userId);
+            await (0, transaction_locks_1.lockAdvisoryKey)(tx, 0, userId);
+            // A screening deletion/update takes this same lock before checking
+            // reservations, so no reservation can be created between that check
+            // and the screening mutation.
+            await (0, transaction_locks_1.lockScreening)(tx, numericScreeningId);
             // Serialize the requested screening/seat combinations across users. The
             // sorted order avoids deadlocks when two requests contain multiple seats.
             for (const seatId of [...numericSeatIds].sort((a, b) => a - b)) {
-                await lockAdvisoryKey(tx, numericScreeningId, seatId);
+                await (0, transaction_locks_1.lockAdvisoryKey)(tx, numericScreeningId, seatId);
             }
             const now = new Date();
             await expireStalePendingReservations(tx, userId, now);
@@ -275,7 +267,7 @@ async function payReservation(req, res) {
         result = await runSerializableTransaction(async (tx) => {
             // A repeated payment for the same reservation is serialized, while the
             // unique Ticket.reservationId constraint is the final database guard.
-            await lockAdvisoryKey(tx, -1, reservationId);
+            await (0, transaction_locks_1.lockAdvisoryKey)(tx, -1, reservationId);
             const reservation = await tx.reservation.findUnique({
                 where: { id: reservationId },
                 include: {
@@ -402,7 +394,7 @@ async function getMyReservations(req, res) {
     }
     const userId = user.id;
     const reservations = await runSerializableTransaction(async (tx) => {
-        await lockAdvisoryKey(tx, 0, userId);
+        await (0, transaction_locks_1.lockAdvisoryKey)(tx, 0, userId);
         const now = new Date();
         await expireStalePendingReservations(tx, userId, now);
         return tx.reservation.findMany({

@@ -2,10 +2,12 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { Request, Response } from "express";
 import prisma from "../config/prisma";
-import { AuthResponseDTO } from "../types/api";
+import { AuthResponseDTO, UserDTO } from "../types/api";
+import { getAuthenticatedUser } from "../middleware/auth";
 import { sendApiError } from "../utils/api-response";
 import {
   parseLoginBody,
+  parseProfileUpdateBody,
   parseSignupBody,
 } from "../validation/api";
 import { toUserDTO, toUserSummaryDTO } from "../utils/api-mappers";
@@ -71,5 +73,28 @@ export async function login(req: Request, res: Response): Promise<void> {
     user: toUserDTO(user),
   };
 
+  res.json(response);
+}
+
+// PATCH /api/auth/me — modifier le nom de l'utilisateur authentifié
+export async function updateProfile(req: Request, res: Response): Promise<void> {
+  const authUser = getAuthenticatedUser(req);
+  if (!authUser) {
+    sendApiError(res, 401, { message: "Token manquant", code: "AUTH_REQUIRED" });
+    return;
+  }
+
+  const parsed = parseProfileUpdateBody(req.body);
+  if (!parsed.ok) {
+    sendApiError(res, 400, parsed.error);
+    return;
+  }
+
+  const user = await prisma.user.update({
+    where: { id: authUser.id },
+    data: { name: parsed.value.name },
+  });
+
+  const response: UserDTO = toUserDTO(user);
   res.json(response);
 }

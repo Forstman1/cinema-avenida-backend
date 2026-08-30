@@ -14,6 +14,7 @@ import {
   isOfficialShowTime,
 } from "../utils/cinema-time";
 import { CINEMA_CONFIG } from "../config/cinema";
+import { lockAdvisoryKey, lockScreening } from "../utils/transaction-locks";
 
 const MAX_SERIALIZATION_RETRIES = 3;
 
@@ -57,24 +58,6 @@ async function runSerializableTransaction<T>(
   }
 
   throw lastError;
-}
-
-/**
- * Transaction-scoped PostgreSQL advisory locks serialize access to a
- * screening/seat pair without preventing that same seat on another screening.
- * Namespace 0 is reserved for the per-user pending-reservation lock.
- */
-async function lockAdvisoryKey(
-  tx: Prisma.TransactionClient,
-  namespace: number,
-  key: number
-): Promise<void> {
-  await tx.$executeRaw`
-    SELECT pg_advisory_xact_lock(
-      CAST(${namespace} AS integer),
-      CAST(${key} AS integer)
-    )
-  `;
 }
 
 interface SeatLockState {
@@ -161,8 +144,13 @@ export async function lockSeats(req: Request, res: Response): Promise<void> {
   try {
     result = await runSerializableTransaction(async (tx) => {
     // Serialize all lock attempts by this user so two requests cannot both
-    // create an active pending reservation for the same account.
+      // create an active pending reservation for the same account.
       await lockAdvisoryKey(tx, 0, userId);
+
+      // A screening deletion/update takes this same lock before checking
+      // reservations, so no reservation can be created between that check
+      // and the screening mutation.
+      await lockScreening(tx, numericScreeningId);
 
     // Serialize the requested screening/seat combinations across users. The
     // sorted order avoids deadlocks when two requests contain multiple seats.

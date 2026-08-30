@@ -5,9 +5,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.signup = signup;
 exports.login = login;
+exports.updateProfile = updateProfile;
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const prisma_1 = __importDefault(require("../config/prisma"));
+const auth_1 = require("../middleware/auth");
 const api_response_1 = require("../utils/api-response");
 const api_1 = require("../validation/api");
 const api_mappers_1 = require("../utils/api-mappers");
@@ -60,5 +62,24 @@ async function login(req, res) {
         token,
         user: (0, api_mappers_1.toUserDTO)(user),
     };
+    res.json(response);
+}
+// PATCH /api/auth/me — modifier le nom de l'utilisateur authentifié
+async function updateProfile(req, res) {
+    const authUser = (0, auth_1.getAuthenticatedUser)(req);
+    if (!authUser) {
+        (0, api_response_1.sendApiError)(res, 401, { message: "Token manquant", code: "AUTH_REQUIRED" });
+        return;
+    }
+    const parsed = (0, api_1.parseProfileUpdateBody)(req.body);
+    if (!parsed.ok) {
+        (0, api_response_1.sendApiError)(res, 400, parsed.error);
+        return;
+    }
+    const user = await prisma_1.default.user.update({
+        where: { id: authUser.id },
+        data: { name: parsed.value.name },
+    });
+    const response = (0, api_mappers_1.toUserDTO)(user);
     res.json(response);
 }

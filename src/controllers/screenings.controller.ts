@@ -17,16 +17,19 @@ import {
 } from "../utils/cinema-time";
 import { CINEMA_CONFIG } from "../config/cinema";
 import { Prisma } from "@prisma/client";
+import { lockScreening } from "../utils/transaction-locks";
 
 type ScreeningUpdateResult =
   | { kind: "screening_not_found" }
   | { kind: "movie_not_found" }
+  | { kind: "screening_past_read_only" }
   | { kind: "screening_in_past" }
   | { kind: "has_reservations" }
   | { kind: "updated"; screening: ScreeningRecord };
 
 type ScreeningDeleteResult =
   | { kind: "screening_not_found" }
+  | { kind: "screening_past_read_only" }
   | { kind: "has_reservations" }
   | { kind: "deleted" };
 
@@ -226,15 +229,22 @@ export async function updateScreening(
   try {
     const result = await prisma.$transaction(
       async (tx): Promise<ScreeningUpdateResult> => {
+        await lockScreening(tx, parsedId.value);
+
         const screening = await tx.screening.findUnique({
           where: { id: parsedId.value },
         });
         if (!screening) return { kind: "screening_not_found" };
 
+        const now = new Date();
+        if (!isScreeningInFuture(screening, now)) {
+          return { kind: "screening_past_read_only" };
+        }
+
         const movie = await tx.movie.findUnique({ where: { id: movieId } });
         if (!movie) return { kind: "movie_not_found" };
 
-        if (!isScreeningInFuture({ date: dateValue, showTime })) {
+        if (!isScreeningInFuture({ date: dateValue, showTime }, now)) {
           return { kind: "screening_in_past" };
         }
 
@@ -273,6 +283,13 @@ export async function updateScreening(
       sendApiError(res, 404, {
         message: "Film non trouvé",
         code: "MOVIE_NOT_FOUND",
+      });
+      return;
+    }
+    if (result.kind === "screening_past_read_only") {
+      sendApiError(res, 400, {
+        message: "Impossible de modifier une séance passée : elle est en lecture seule",
+        code: "SCREENING_PAST_READ_ONLY",
       });
       return;
     }
@@ -334,16 +351,35 @@ export async function deleteScreening(
   try {
     const result = await prisma.$transaction(
       async (tx): Promise<ScreeningDeleteResult> => {
+        await lockScreening(tx, parsedId.value);
+
         const screening = await tx.screening.findUnique({
           where: { id: parsedId.value },
-          select: { id: true },
+          select: { id: true, date: true, showTime: true },
         });
         if (!screening) return { kind: "screening_not_found" };
 
-        const reservationCount = await tx.reservation.count({
-          where: { screeningId: parsedId.value },
+        const now = new Date();
+        if (!isScreeningInFuture(screening, now)) {
+          return { kind: "screening_past_read_only" };
+        }
+
+        const activeReservation = await tx.reservation.findFirst({
+          where: {
+            screeningId: parsedId.value,
+            OR: [
+              { status: "CONFIRMED" },
+              {
+                status: "EN_ATTENTE",
+                reservationSeats: {
+                  some: { lockedUntil: { gt: now } },
+                },
+              },
+            ],
+          },
+          select: { id: true },
         });
-        if (reservationCount > 0) return { kind: "has_reservations" };
+        if (activeReservation) return { kind: "has_reservations" };
 
         await tx.screening.delete({ where: { id: parsedId.value } });
         return { kind: "deleted" };
@@ -358,9 +394,16 @@ export async function deleteScreening(
       });
       return;
     }
+    if (result.kind === "screening_past_read_only") {
+      sendApiError(res, 400, {
+        message: "Impossible de supprimer une séance passée : elle est en lecture seule",
+        code: "SCREENING_PAST_READ_ONLY",
+      });
+      return;
+    }
     if (result.kind === "has_reservations") {
       sendApiError(res, 409, {
-        message: "Cette séance possède déjà des réservations et ne peut pas être supprimée",
+        message: "Impossible de supprimer cette séance : des réservations existent déjà.",
         code: "SCREENING_HAS_RESERVATIONS",
       });
       return;
@@ -376,6 +419,20 @@ export async function deleteScreening(
       sendApiError(res, 404, {
         message: "Séance non trouvée",
         code: "SCREENING_NOT_FOUND",
+      });
+      return;
+    }
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2003"
+    ) {
+      // Cancelled/expired reservations are not active bookings, but the
+      // existing RESTRICT foreign key still prevents removing their parent
+      // screening. Keep that historical data intact and return the same safe
+      // conflict response instead of attempting any child cleanup.
+      sendApiError(res, 409, {
+        message: "Impossible de supprimer cette séance : des réservations existent déjà.",
+        code: "SCREENING_HAS_RESERVATIONS",
       });
       return;
     }

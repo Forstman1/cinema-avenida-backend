@@ -17,6 +17,10 @@ export interface LoginInput {
   password: string;
 }
 
+export interface ProfileUpdateInput {
+  name: string;
+}
+
 export interface MovieCreateInput {
   title: string;
   synopsis: string;
@@ -131,6 +135,18 @@ export function parseLoginBody(input: unknown): ValidationResult<LoginInput> {
   if (!email.ok) return email;
   if (!password.ok) return password;
   return success({ email: email.value, password: password.value });
+}
+
+export function parseProfileUpdateBody(
+  input: unknown
+): ValidationResult<ProfileUpdateInput> {
+  const body = asRecord(input);
+  if (!body) return failure("Le corps de la requête est invalide");
+
+  const name = requiredString(body.name, "name");
+  if (!name.ok) return name;
+
+  return success({ name: name.value.trim() });
 }
 
 export function parseMovieCreateBody(

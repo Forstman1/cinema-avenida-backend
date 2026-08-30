@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.parseSignupBody = parseSignupBody;
 exports.parseLoginBody = parseLoginBody;
+exports.parseProfileUpdateBody = parseProfileUpdateBody;
 exports.parseMovieCreateBody = parseMovieCreateBody;
 exports.parseMovieUpdateBody = parseMovieUpdateBody;
 exports.parseScreeningCreateBody = parseScreeningCreateBody;
@@ -84,6 +85,15 @@ function parseLoginBody(input) {
     if (!password.ok)
         return password;
     return success({ email: email.value, password: password.value });
+}
+function parseProfileUpdateBody(input) {
+    const body = asRecord(input);
+    if (!body)
+        return failure("Le corps de la requête est invalide");
+    const name = requiredString(body.name, "name");
+    if (!name.ok)
+        return name;
+    return success({ name: name.value.trim() });
 }
 function parseMovieCreateBody(input) {
     const body = asRecord(input);
