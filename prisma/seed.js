@@ -305,6 +305,9 @@ async function main() {
   const tomorrowKey = storedCalendarDateKey(addDays(dateKeyToDate(todayKey), 1));
   const nextMonday = addDays(monday, 7);
   const nextMondayKey = storedCalendarDateKey(nextMonday);
+  // On Sunday, next Monday is also tomorrow, so use the remaining official
+  // slot instead of colliding with tomorrow's opening screening.
+  const nextMondayShowTime = tomorrowKey === nextMondayKey ? LATE_SHOW_TIME : OPENING_SHOW_TIME;
   const nextWeekOnlyKey = storedCalendarDateKey(addDays(nextMonday, 2));
   const emptyFutureKey = storedCalendarDateKey(addDays(nextMonday, 6));
   const recentDateKey = storedCalendarDateKey(addDays(monday, -7));
@@ -347,7 +350,7 @@ async function main() {
   addRequestedScreening("Film terminé", recentDateKey, OPENING_SHOW_TIME);
   addRequestedScreening("Le Comte de Monte-Cristo", recentDateKey, PRIME_SHOW_TIME);
   addRequestedScreening("Dune : Deuxième Partie", recentDuneDateKey, OPENING_SHOW_TIME);
-  addRequestedScreening("Dune : Deuxième Partie", nextMondayKey, OPENING_SHOW_TIME);
+  addRequestedScreening("Dune : Deuxième Partie", nextMondayKey, nextMondayShowTime);
   addRequestedScreening("Film à venir la semaine prochaine", nextWeekOnlyKey, PRIME_SHOW_TIME);
 
   for (const item of requestedSchedule) {
@@ -370,7 +373,7 @@ async function main() {
   const activePendingScreening = screeningByKey.get(`Parasite|${tomorrowKey}|${PRIME_SHOW_TIME}`);
   const expiredPendingScreening = screeningByKey.get(`Spider-Man : Across the Spider-Verse|${todayKey}|${LATE_SHOW_TIME}`);
   const cancelledScreening = screeningByKey.get(`Film terminé|${recentDateKey}|${OPENING_SHOW_TIME}`);
-  const soldOutScreening = screeningByKey.get(`Dune : Deuxième Partie|${nextMondayKey}|${OPENING_SHOW_TIME}`);
+  const soldOutScreening = screeningByKey.get(`Dune : Deuxième Partie|${nextMondayKey}|${nextMondayShowTime}`);
 
   const confirmedSeats = ["A1", "D1", "H1"];
   fixture.confirmed = await ensureReservation({ userId: users.client1.id, screeningId: currentScreening.id, seatIds: seatIdsFor(confirmedSeats), status: "CONFIRMED", lockedUntil: null, totalAmount: amountFor(confirmedSeats) });
